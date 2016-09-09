@@ -28,6 +28,7 @@
 #define SOUND_EXPLOSION		"weapons/tacky_grenadier_explode3.wav"
 #define MODEL_GRENADE 		"models/weapons/w_models/w_grenade_frag.mdl"
 
+#define TOTALGRENADES		2
 #define GRENADE_FRAG		1
 #define GRENADE_SMOKE		2
 
@@ -76,15 +77,17 @@ public void OnAllPluginsLoaded()
 /////////////////////
 
 // Client Arrays
-int tfgo_player_money[MAXPLAYERS + 1]; 			// Each player's current money
-Handle tfgo_MoneyHUD[MAXPLAYERS + 1]; 			// Each player's HUD timer
-int tfgo_clientWeapons[MAXPLAYERS+1][6]; 		// Bought weapons, by ID, 4th value is the type of the grenade, 5th is the amount of grenades.
-float tfgo_clientSpawnPos[MAXPLAYERS+1][3]; 		// Save the position where a specific player spawned at to check buyzone distance.
-bool tfgo_canClientBuy[MAXPLAYERS+1];			// Is the player in the bounds of the buytime?
+int tfgo_player_money[MAXPLAYERS + 1]; 					// Each player's current money
+Handle tfgo_MoneyHUD[MAXPLAYERS + 1]; 					// Each player's HUD timer
+int tfgo_clientWeapons[MAXPLAYERS+1][6]; 				// Bought weapons, by ID, 4th value is the type of the grenade, 5th is the amount of grenades.
+int tfgo_clientGrenades[MAXPLAYERS+1][TOTALGRENADES+1];	// Amount of grenades of every client
+float tfgo_clientSpawnPos[MAXPLAYERS+1][3]; 				// Save the position where a specific player spawned at to check buyzone distance.
+bool tfgo_canClientBuy[MAXPLAYERS+1];					// Is the player in the bounds of the buytime?
 
 // Weapons
 new String:tfgo_weapons_name[256][32];
 int tfgo_weapons[256][3];
+int tfgo_grenades[5][1];
 
 // Convars
 Handle g_tfgoDefaultMoney;
@@ -119,6 +122,7 @@ Menu BuyMenu_pistols = null;
 Menu BuyMenu_smgs = null;
 Menu BuyMenu_rifles = null;
 Menu BuyMenu_heavy = null;
+Menu BuyMenu_grenades = null;
 
 // Other
 new dashoffset;
@@ -131,6 +135,7 @@ public OnPluginStart()
 	PrecacheModel(MODEL_GRENADE, true);
 	PrecacheSound(SOUND_FAILED, true);
 	PrecacheSound(SOUND_EXPLOSION, true);
+	PrecacheSound(SOUND_THROW, true);
 	
 	// C O N V A R S //
 	g_tfgoDefaultMoney = CreateConVar("tfgo_defaultmoney", "800", "Default amount of money a player recieves on start");
@@ -149,7 +154,7 @@ public OnPluginStart()
 	g_tfgoGrenadeDmg = CreateConVar("tfgo_grenade_damage", "100.0", "Damage that the grenade deals");
 	g_tfgoGrenadeRadius = CreateConVar("tfgo_grenade_radius", "198.0", "Grenade explosion radius");
 	g_tfgoGrenadeDelay = CreateConVar("tfgo_grenade_delay", "3.0", "Grenade explosion delay, in seconds");
-	g_tfgoGrenadeSpeed = CreateConVar("tfgo_grenade_speed", "500.0", "Speed of the grenade when thrown");
+	g_tfgoGrenadeSpeed = CreateConVar("tfgo_grenade_speed", "1000.0", "Speed of the grenade when thrown");
 	
 	// A D M I N   C O M M A N D S //
 	RegAdminCmd("sm_setmoney", Command_TFGO_Admin_SetMoney, ADMFLAG_ROOT, "sm_setmoney <amount> [player]");
@@ -175,9 +180,13 @@ public OnPluginStart()
 	for(int i = 1; i <= MaxClients; i++)
 	{
 		tfgo_player_money[i] = GetConVarInt(g_tfgoDefaultMoney);
-		for(int b = 0 ; b < 5 ; b++)
+		for(int b = 0 ; b < 3 ; b++)
 		{
 			tfgo_clientWeapons[i][b] = -1;
+		}
+		for(int b = 1 ; b < TOTALGRENADES ; b++)
+		{
+			tfgo_clientGrenades[i][b] = 0;
 		}
 	}
 	
@@ -211,9 +220,13 @@ public void OnMapStart()
 //////////////////////////////////
 public OnClientPostAdminCheck(client)
 {
-	for(int b = 0 ; b < 5 ; b++)
+	for(int b = 0 ; b < 3 ; b++)
 	{
 		tfgo_clientWeapons[client][b] = -1; // Reset player inventory
+	}
+	for(int b = 1 ; b < TOTALGRENADES ; b++)
+	{
+		tfgo_clientGrenades[client][b] = 0;
 	}
 	
 	tfgo_player_money[client] = GetConVarInt(g_tfgoDefaultMoney); // Set the player's money to default
@@ -304,7 +317,10 @@ public player_spawn(Handle:event, const String:name[], bool:dontBroadcast)
 	GetEntPropVector(client, Prop_Send, "m_vecOrigin", pos); // Get the client's current pos
 	tfgo_clientSpawnPos[client] = pos; // set it to the global array
 	CreateTimer(0.2, timer_SetPlayerHealth, client);
-	CreateTimer(GetConVarFloat(g_tfgoBuyTime), timer_BuyTimeOver, client);
+	if(GetConVarFloat(g_tfgoBuyTime) > -1.0)
+	{
+		CreateTimer(GetConVarFloat(g_tfgoBuyTime), timer_BuyTimeOver, client);
+	}
 	tfgo_canClientBuy[client] = true;
 	
 	// Below was just for debugging
@@ -417,9 +433,13 @@ public Player_Death(Handle:event, const String:name[], bool:dontBroadcast)
 	new client = GetClientOfUserId(GetEventInt(event, "attacker"));
 	new killed = GetClientOfUserId(GetEventInt(event, "userid"));
 	new assister = GetClientOfUserId(GetEventInt(event, "assister"));
-	for(int b = 0 ; b < 5 ; b++)
+	for(int b = 0 ; b < 3 ; b++)
 	{
 		tfgo_clientWeapons[killed][b] = -1;
+	}
+	for(int b = 1 ; b < TOTALGRENADES ; b++)
+	{
+		tfgo_clientGrenades[killed][b] = 0;
 	}
 	if(client != killed && GetConVarInt(g_tfgoMoneyOnKill) >= 1 && IsValidClient(client))
 	{
@@ -491,13 +511,37 @@ public Action:Command_TFGO_GiveGrenade(client, args)
 {
 	if(args < 2)
 	{
-		ReplyToCommand(client, "[TFGO] Usage: sm_givegrenade <player> <amount>");
+		ReplyToCommand(client, "[TFGO] Usage: sm_givegrenade <player> <amount> [type]");
 		return Plugin_Handled;
 	}
 	else
 	{
 		char arg[32];
+		char grenadetype_str[32];
+		int grenadetype;
 		GetCmdArg(2, arg, sizeof(arg)); // Get the second argument, and write it into the arg variable
+		if(args > 2)
+		{
+			GetCmdArg(3, grenadetype_str, sizeof(grenadetype_str));
+			if(StrEqual(grenadetype_str, "he"))
+			{
+				grenadetype = GRENADE_FRAG;
+			}
+			else if(StrEqual(grenadetype_str, "smoke"))
+			{
+				grenadetype = GRENADE_SMOKE;
+			}
+			else
+			{
+				PrintToChat(client, "[TFGO] Invalid grenade type %s, possible types: he, smoke", grenadetype_str);
+				return Plugin_Handled;
+			}
+		}
+		else
+		{
+			grenadetype_str = "he";
+			grenadetype = GRENADE_FRAG;
+		}
 		
 		if(!IsInteger(arg)) // If the argument is an integer
 		{
@@ -537,10 +581,9 @@ public Action:Command_TFGO_GiveGrenade(client, args)
 			char sendername[64];
 			GetClientName(target_list[i], targetname, sizeof(targetname)); // Get the player's name to display it
 			GetClientName(client, sendername, sizeof(sendername)); // Get the sender's name
-			tfgo_clientWeapons[target_list[i]][4] = GRENADE_FRAG; // Set the player's grenade type
-			tfgo_clientWeapons[target_list[i]][5] = amount; // Set the player's grenade amount
-			ReplyToCommand(client, "[TFGO] Set %s's grenades to %i", targetname, amount); // Return a confirmation message to the player
-			PrintToChat(target_list[i], "[TFGO] %s just set your grenades to %i!", sendername, amount); // Tell the target about these amazing news!
+			tfgo_clientGrenades[target_list[i]][grenadetype] = amount; // Set the player's grenade
+			ReplyToCommand(client, "[TFGO] Set %s's %s grenades to %i", targetname, grenadetype_str, amount); // Return a confirmation message to the player
+			PrintToChat(target_list[i], "[TFGO] %s just set your %s grenades to %i!", sendername, grenadetype_str, amount); // Tell the target about these amazing news!
 		}
 		return Plugin_Handled;
 	}
@@ -561,8 +604,8 @@ public Action:Command_TFGO_ThrowGrenade(client, args)
 			return Plugin_Handled;
 		}
 		
-		// Check if player has FRAG grenades, and more than 0.
-		if (tfgo_clientWeapons[client][4] == GRENADE_FRAG && tfgo_clientWeapons[client][5] > 0)
+		// Check if player has more than 0 frag grenades
+		if (tfgo_clientGrenades[client][GRENADE_FRAG] > 0)
 		{
 			decl Float:pos[3];
 			decl Float:ePos[3];
@@ -602,11 +645,10 @@ public Action:Command_TFGO_ThrowGrenade(client, args)
 				CreateTimer(delay, Function_GrenadeExplode, grenade);
 			}
 			EmitSoundToAll(SOUND_THROW, client, _, _, _, 1.0);
-			tfgo_clientWeapons[client][5] --;
+			tfgo_clientGrenades[client][GRENADE_FRAG] --;
 		}
 		else
 		{
-			PrintToChat(client, "[TFGO] You don't have enough FRAG grenades!");
 			EmitSoundToClient(client, SOUND_FAILED, client, _, _, _, 1.0);
 			return Plugin_Handled;
 		}
@@ -797,6 +839,8 @@ public TFGO_ReloadWeapons()
 		tfgo_weapons_name[i] = "0";
 	}
 	
+	int count = 0;
+	
 	// load config file
 	decl String:config[PLATFORM_MAX_PATH];
 	BuildPath(Path_SM, config, PLATFORM_MAX_PATH, "configs/tfgo_weapons.cfg");  
@@ -805,54 +849,141 @@ public TFGO_ReloadWeapons()
 	
 	// PISTOLS
 	for (new i = 1; KvizExists(kv, "pistol:nth-child(%i)", i); i++) {
-		decl String:weaponname[32], wepid, price, id;
-		KvizGetNumExact(kv, id, "pistol:nth-child(%i):key", i);
-		KvizGetStringExact(kv, weaponname, sizeof(weaponname), "pistol:nth-child(%i).displayname", i);
-		KvizGetNumExact(kv, wepid, "pistol:nth-child(%i).weaponid", i);
-		KvizGetNumExact(kv, price, "pistol:nth-child(%i).price", i);
-		tfgo_weapons_name[id] = weaponname;
-		tfgo_weapons[id][0] = wepid;
-		tfgo_weapons[id][1] = price;
-		tfgo_weapons[id][2] = WEAPON_PISTOL; // pistol
+		decl String:weaponname[32], String:logname[32], String:classname[32], String:attributes[256], String:viewmodel[PLATFORM_MAX_PATH], wepid, slot, level, price;
+		bool error = false;
+		int customid = 9000+count;
+		if(!KvizGetStringExact(kv, logname, sizeof(logname), "pistol:nth-child(%i):key", i)) error=true;
+		if(!KvizGetStringExact(kv, weaponname, sizeof(weaponname), "pistol:nth-child(%i).displayname", i)) error=true;
+		if(!KvizGetStringExact(kv, classname, sizeof(classname), "pistol:nth-child(%i).weaponclass", i)) error=true;
+		if(!KvizGetNumExact(kv, slot, "pistol:nth-child(%i).slot", i)) error=true;
+		if(!KvizGetNumExact(kv, level, "pistol:nth-child(%i).level", i)) level=1;
+		if(!KvizGetNumExact(kv, wepid, "pistol:nth-child(%i).weaponid", i)) error=true;
+		if(!KvizGetStringExact(kv, attributes, sizeof(attributes), "pistol:nth-child(%i).attributes", i)) attributes="";
+		if(!KvizGetStringExact(kv, viewmodel, sizeof(viewmodel), "pistol:nth-child(%i).viewmodel", i)) viewmodel="";
+		if(!KvizGetNumExact(kv, price, "pistol:nth-child(%i).price", i)) error=true;
+		
+		if(!error)
+		{
+			TF2Items_CreateWeapon(customid, classname, wepid, slot, 1, level, attributes, -1, viewmodel, true);
+			tfgo_weapons_name[count] = weaponname;
+			tfgo_weapons[count][0] = customid;
+			tfgo_weapons[count][1] = price;
+			tfgo_weapons[count][2] = WEAPON_PISTOL; // pistol
+			count++;
+		}
+		else
+		{
+			PrintToServer("[TFGO] BUMPED INTO AN ERROR IN CONFIG FILE (AT: PISTOL), MAKE SURE THAT IT IS CORRECTLY MADE!");
+		}
 	}
 	
 	// SMGS
 	for (new i = 1; KvizExists(kv, "smg:nth-child(%i)", i); i++) {
-		decl String:weaponname[32], wepid, price, id;
-		KvizGetNumExact(kv, id, "smg:nth-child(%i):key", i);
-		KvizGetStringExact(kv, weaponname, sizeof(weaponname), "smg:nth-child(%i).displayname", i);
-		KvizGetNumExact(kv, wepid, "smg:nth-child(%i).weaponid", i);
-		KvizGetNumExact(kv, price, "smg:nth-child(%i).price", i);
-		tfgo_weapons_name[id] = weaponname;
-		tfgo_weapons[id][0] = wepid;
-		tfgo_weapons[id][1] = price;
-		tfgo_weapons[id][2] = WEAPON_SMG; // smg
+		decl String:weaponname[32], String:logname[32], String:classname[32], String:attributes[256], String:viewmodel[PLATFORM_MAX_PATH], wepid, slot, level, price;
+		bool error = false;
+		int customid = 9000+count;
+		if(!KvizGetStringExact(kv, logname, sizeof(logname), "smg:nth-child(%i):key", i)) error=true;
+		if(!KvizGetStringExact(kv, weaponname, sizeof(weaponname), "smg:nth-child(%i).displayname", i)) error=true;
+		if(!KvizGetStringExact(kv, classname, sizeof(classname), "smg:nth-child(%i).weaponclass", i)) error=true;
+		if(!KvizGetNumExact(kv, slot, "smg:nth-child(%i).slot", i)) error=true;
+		if(!KvizGetNumExact(kv, level, "smg:nth-child(%i).level", i)) level=1;
+		if(!KvizGetNumExact(kv, wepid, "smg:nth-child(%i).weaponid", i)) error=true;
+		if(!KvizGetStringExact(kv, attributes, sizeof(attributes), "smg:nth-child(%i).attributes", i)) attributes="";
+		if(!KvizGetStringExact(kv, viewmodel, sizeof(viewmodel), "smg:nth-child(%i).viewmodel", i)) viewmodel="";
+		if(!KvizGetNumExact(kv, price, "smg:nth-child(%i).price", i)) error=true;
+		
+		if(!error)
+		{
+			TF2Items_CreateWeapon(customid, classname, wepid, slot, 1, level, attributes, -1, viewmodel, true);
+			tfgo_weapons_name[count] = weaponname;
+			tfgo_weapons[count][0] = customid;
+			tfgo_weapons[count][1] = price;
+			tfgo_weapons[count][2] = WEAPON_SMG; // smg
+			count++;
+		}
+		else
+		{
+			PrintToServer("[TFGO] BUMPED INTO AN ERROR IN CONFIG FILE (AT: SMG), MAKE SURE THAT IT IS CORRECTLY MADE!");
+		}
 	}
 	
 	// RIFLES
 	for (new i = 1; KvizExists(kv, "rifle:nth-child(%i)", i); i++) {
-		decl String:weaponname[32], wepid, price, id;
-		KvizGetNumExact(kv, id, "rifle:nth-child(%i):key", i);
-		KvizGetStringExact(kv, weaponname, sizeof(weaponname), "rifle:nth-child(%i).displayname", i);
-		KvizGetNumExact(kv, wepid, "rifle:nth-child(%i).weaponid", i);
-		KvizGetNumExact(kv, price, "rifle:nth-child(%i).price", i);
-		tfgo_weapons_name[id] = weaponname;
-		tfgo_weapons[id][0] = wepid;
-		tfgo_weapons[id][1] = price;
-		tfgo_weapons[id][2] = WEAPON_RIFLE; // rifle
+		decl String:weaponname[32], String:logname[32], String:classname[32], String:attributes[256], String:viewmodel[PLATFORM_MAX_PATH], wepid, slot, level, price;
+		bool error = false;
+		int customid = 9000+count;
+		if(!KvizGetStringExact(kv, logname, sizeof(logname), "rifle:nth-child(%i):key", i)) error=true;
+		if(!KvizGetStringExact(kv, weaponname, sizeof(weaponname), "rifle:nth-child(%i).displayname", i)) error=true;
+		if(!KvizGetStringExact(kv, classname, sizeof(classname), "rifle:nth-child(%i).weaponclass", i)) error=true;
+		if(!KvizGetNumExact(kv, slot, "rifle:nth-child(%i).slot", i)) error=true;
+		if(!KvizGetNumExact(kv, level, "rifle:nth-child(%i).level", i)) level=1;
+		if(!KvizGetNumExact(kv, wepid, "rifle:nth-child(%i).weaponid", i)) error=true;
+		if(!KvizGetStringExact(kv, attributes, sizeof(attributes), "rifle:nth-child(%i).attributes", i)) attributes="";
+		if(!KvizGetStringExact(kv, viewmodel, sizeof(viewmodel), "rifle:nth-child(%i).viewmodel", i)) viewmodel="";
+		if(!KvizGetNumExact(kv, price, "rifle:nth-child(%i).price", i)) error=true;
+		
+		if(!error)
+		{
+			TF2Items_CreateWeapon(customid, classname, wepid, slot, 1, level, attributes, -1, viewmodel, true);
+			tfgo_weapons_name[count] = weaponname;
+			tfgo_weapons[count][0] = customid;
+			tfgo_weapons[count][1] = price;
+			tfgo_weapons[count][2] = WEAPON_RIFLE; // rifle
+			count++;
+		}
+		else
+		{
+			PrintToServer("[TFGO] BUMPED INTO AN ERROR IN CONFIG FILE (AT: RIFLE), MAKE SURE THAT IT IS CORRECTLY MADE!");
+		}
 	}
 	
 	// HEAVIES
 	for (new i = 1; KvizExists(kv, "heavy:nth-child(%i)", i); i++) {
-		decl String:weaponname[32], wepid, price, id;
-		KvizGetNumExact(kv, id, "heavy:nth-child(%i):key", i);
-		KvizGetStringExact(kv, weaponname, sizeof(weaponname), "heavy:nth-child(%i).displayname", i);
-		KvizGetNumExact(kv, wepid, "heavy:nth-child(%i).weaponid", i);
-		KvizGetNumExact(kv, price, "heavy:nth-child(%i).price", i);
-		tfgo_weapons_name[id] = weaponname;
-		tfgo_weapons[id][0] = wepid;
-		tfgo_weapons[id][1] = price;
-		tfgo_weapons[id][2] = WEAPON_HEAVY; // heavy
+		decl String:weaponname[32], String:logname[32], String:classname[32], String:attributes[256], String:viewmodel[PLATFORM_MAX_PATH], wepid, slot, level, price;
+		bool error = false;
+		int customid = 9000+count;
+		if(!KvizGetStringExact(kv, logname, sizeof(logname), "heavy:nth-child(%i):key", i)) error=true;
+		if(!KvizGetStringExact(kv, weaponname, sizeof(weaponname), "heavy:nth-child(%i).displayname", i)) error=true;
+		if(!KvizGetStringExact(kv, classname, sizeof(classname), "heavy:nth-child(%i).weaponclass", i)) error=true;
+		if(!KvizGetNumExact(kv, slot, "heavy:nth-child(%i).slot", i)) error=true;
+		if(!KvizGetNumExact(kv, level, "heavy:nth-child(%i).level", i)) level=1;
+		if(!KvizGetNumExact(kv, wepid, "heavy:nth-child(%i).weaponid", i)) error=true;
+		if(!KvizGetStringExact(kv, attributes, sizeof(attributes), "heavy:nth-child(%i).attributes", i)) attributes="";
+		if(!KvizGetStringExact(kv, viewmodel, sizeof(viewmodel), "heavy:nth-child(%i).viewmodel", i)) viewmodel="";
+		if(!KvizGetNumExact(kv, price, "heavy:nth-child(%i).price", i)) error=true;
+		
+		if(!error)
+		{
+			TF2Items_CreateWeapon(customid, classname, wepid, slot, 1, level, attributes, -1, viewmodel, true);
+			tfgo_weapons_name[count] = weaponname;
+			tfgo_weapons[count][0] = customid;
+			tfgo_weapons[count][1] = price;
+			tfgo_weapons[count][2] = WEAPON_HEAVY; // heavy
+			count++;
+		}
+		else
+		{
+			PrintToServer("[TFGO] BUMPED INTO AN ERROR IN CONFIG FILE (AT: HEAVY), MAKE SURE THAT IT IS CORRECTLY MADE!");
+		}
+	}
+	
+	bool hegrenade_found = false;
+	// GRENADES
+	for (new i = 1; KvizExists(kv, "grenadeprices:nth-child(%i)", i); i++) {
+		decl String:id[32];
+		KvizGetStringExact(kv, id, sizeof(id), "grenadeprices:nth-child(%i):key", i);
+		if(StrEqual(id, "hegrenade"))
+		{
+			decl price;
+			KvizGetNumExact(kv, price, "grenadeprices:nth-child(%i).price", i);
+			tfgo_grenades[GRENADE_FRAG][0] = price;
+			hegrenade_found = true;
+		}
+	}
+	if(!hegrenade_found)
+	{
+		tfgo_grenades[GRENADE_FRAG][0] = 200;
+		PrintToServer("[TFGO] Couldn't find hegrenade in config, setting hardcoded price ($200)");
 	}
 	
 	KvizClose(kv);
@@ -864,6 +995,7 @@ public TFGO_ReloadWeapons()
 		BuyMenu_pistols = BuildBuyMenu_pistols();
 		BuyMenu_rifles = BuildBuyMenu_rifles();
 		BuyMenu_smgs = BuildBuyMenu_smgs();
+		BuyMenu_grenades = BuildBuyMenu_grenades();
 	}
 	else
 	{
@@ -872,12 +1004,14 @@ public TFGO_ReloadWeapons()
 		delete(BuyMenu_pistols);
 		delete(BuyMenu_rifles);
 		delete(BuyMenu_smgs);
-		BuyMenu = null; BuyMenu_heavy = null; BuyMenu_pistols = null; BuyMenu_rifles = null; BuyMenu_smgs = null;
+		delete(BuyMenu_grenades);
+		BuyMenu = null; BuyMenu_heavy = null; BuyMenu_pistols = null; BuyMenu_rifles = null; BuyMenu_smgs = null; BuyMenu_grenades = null;
 		BuyMenu = BuildBuyMenu();
 		BuyMenu_heavy = BuildBuyMenu_heavy();
 		BuyMenu_pistols = BuildBuyMenu_pistols();
 		BuyMenu_rifles = BuildBuyMenu_rifles();
 		BuyMenu_smgs = BuildBuyMenu_smgs();
+		BuyMenu_grenades = BuildBuyMenu_grenades();
 	}
 }
 
@@ -998,6 +1132,7 @@ Menu BuildBuyMenu()
 	menu.AddItem("smg", "SMGs");
 	menu.AddItem("rifle", "Rifles");
 	menu.AddItem("heavy" ,"Heavies");
+	menu.AddItem("grenade", "Grenades");
 	
 	return menu;
 }
@@ -1110,17 +1245,47 @@ Menu BuildBuyMenu_heavy()
 	return menu;
 }
 
+Menu BuildBuyMenu_grenades()
+{
+	bool currentfound = false;
+	Menu menu = new Menu(Menu_BuyMenu_buy);
+	menu.SetTitle("Grenades");
+	
+	menu.AddItem("grenade_frag", "HE Grenade");
+	
+	menu.ExitBackButton = true;
+	
+	return menu;
+}
+
 public int Menu_BuyMenu_buy(Menu menu, MenuAction action, int param1, int param2)
 {
 	if (action == MenuAction_Select)
 	{
 		char info[32];
- 
+		
 		bool found = menu.GetItem(param2, info, sizeof(info));
+		
+		if(StrEqual(info, "grenade_frag"))
+		{
+			if(tfgo_clientWeapons[param1][4] == GRENADE_FRAG && tfgo_clientWeapons[param1][5] > 0)
+			{
+				PrintToChat(param1, "[TFGO] You can't carry any more!");
+			}
+			else
+			{
+				tfgo_clientGrenades[param1][GRENADE_FRAG]++;
+				PrintToChat(param1, "[TFGO] Bought HE Grenade for $%i", tfgo_grenades[GRENADE_FRAG][0]);
+			}
+		}
+		else
+		{
+			FakeClientCommandEx(param1, "sm_buy %s", info);
+		}
+		
+		BuyMenu.Display(param1, MENU_TIME_FOREVER);
  
 		//PrintToConsole(param1, "You selected item: %d (found? %d info: %s)", param2, found, info);
-		
-		FakeClientCommandEx(param1, "sm_buy %s", info);
 	}
 	else if (action == MenuAction_Cancel && param2 == MenuCancel_ExitBack)
     {
@@ -1152,6 +1317,10 @@ public int Menu_BuyMenu(Menu menu, MenuAction action, int param1, int param2)
 		if(StrEqual(info, "heavy"))
 		{
 			BuyMenu_heavy.Display(param1, MENU_TIME_FOREVER);
+		}
+		if(StrEqual(info, "grenade"))
+		{
+			BuyMenu_grenades.Display(param1, MENU_TIME_FOREVER);
 		}
 	}
 }
@@ -1210,7 +1379,7 @@ public bool:IsClientReady(client)
 
 public bool:PlayerHasWeapon(client, weapon)
 {
-	for(int i; i < 5 ; i++)
+	for(int i; i < 3 ; i++)
 	{
 		if(tfgo_clientWeapons[client][i] == weapon)
 		{
