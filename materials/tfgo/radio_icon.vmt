@@ -1,0 +1,8 @@
+"UnlitGeneric"
+{
+	// Original shader: BaseTextureAlphaBlend
+	"$translucent" 1
+	"$basetexture" "tfgo/radio_icon"
+	"$vertexcolor" 1
+	"$ignorez" 0
+}

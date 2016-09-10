@@ -29,6 +29,36 @@
 #define SOUND_SMOKE			"tfgo/sg_explode.wav"
 #define MODEL_GRENADE 		"models/weapons/w_models/w_grenade_frag.mdl"
 
+#define SOUND_COMMAND_BLOW		"tfgo/radio/blow.wav"
+#define SOUND_COMMAND_CLEAR		"tfgo/radio/clear.wav"
+#define SOUND_COMMAND_GETINPOS	"tfgo/radio/com_getinpos.wav"
+#define SOUND_COMMAND_GO		"tfgo/radio/com_go.wav"
+#define SOUND_COMMAND_REPORTIN	"tfgo/radio/com_reportin.wav"
+#define SOUND_COMMAND_AFFIRM	"tfgo/radio/ct_affirm.wav"
+#define SOUND_COMMAND_BACKUP	"tfgo/radio/ct_backup.wav"
+#define SOUND_COMMAND_COVERME	"tfgo/radio/ct_coverme.wav"
+#define SOUND_COMMAND_ENEMYS	"tfgo/radio/ct_enemys.wav"
+#define SOUND_COMMAND_FINHOLE	"tfgo/radio/ct_fireinhole.wav"
+#define SOUND_COMMAND_INPOS		"tfgo/radio/ct_inpos.wav"
+#define SOUND_COMMAND_REPORTING	"tfgo/radio/ct_reportingin.wav"
+#define SOUND_COMMAND_ENEMYD	"tfgo/radio/enemydown.wav"
+#define SOUND_COMMAND_FALLBACK	"tfgo/radio/fallback.wav"
+#define SOUND_COMMAND_FIREASSIS	"tfgo/radio/fireassis.wav"
+#define SOUND_COMMAND_FOLLOWME	"tfgo/radio/followme.wav"
+#define SOUND_COMMAND_LETSGO	"tfgo/radio/letsgo.wav"
+#define SOUND_COMMAND_LOCKNLOAD	"tfgo/radio/locknload.wav"
+#define SOUND_COMMAND_MOVEOUT	"tfgo/radio/moveout.wav"
+#define SOUND_COMMAND_NEGATIVE	"tfgo/radio/negative.wav"
+#define SOUND_COMMAND_POSITION	"tfgo/radio/position.wav"
+#define SOUND_COMMAND_REGROUP	"tfgo/radio/regroup.wav"
+#define SOUND_COMMAND_ROGER		"tfgo/radio/roger.wav"
+#define SOUND_COMMAND_STICKTOG	"tfgo/radio/sticktog.wav"
+#define SOUND_COMMAND_STORM		"tfgo/radio/stormfront.wav"
+#define SOUND_COMMAND_TAKEPOINT	"tfgo/radio/takepoint.wav"
+
+#define SPRITE_RADIO_VMT		"materials/tfgo/radio_icon.vmt"
+#define SPRITE_RADIO_VTF		"materials/tfgo/radio_icon.vtf"
+
 #define TOTALGRENADES		2
 #define GRENADE_FRAG		1
 #define GRENADE_SMOKE		2
@@ -84,6 +114,9 @@ int tfgo_clientWeapons[MAXPLAYERS+1][6]; 				// Bought weapons, by ID, 4th value
 int tfgo_clientGrenades[MAXPLAYERS+1][TOTALGRENADES+1];	// Amount of grenades of every client
 float tfgo_clientSpawnPos[MAXPLAYERS+1][3]; 				// Save the position where a specific player spawned at to check buyzone distance.
 bool tfgo_canClientBuy[MAXPLAYERS+1];					// Is the player in the bounds of the buytime?
+int tfgo_radioEnts[MAXPLAYERS+1];						// Radio sprite entities
+
+new g_velocityOffset;
 
 // Weapons
 new String:tfgo_weapons_name[256][32];
@@ -126,6 +159,10 @@ Menu BuyMenu_rifles = null;
 Menu BuyMenu_heavy = null;
 Menu BuyMenu_grenades = null;
 
+Menu VoiceMenu_VoiceResponses = null;
+Menu VoiceMenu_VoiceGroup = null;
+Menu VoiceMenu_VoiceCommand = null;
+
 // Other
 new dashoffset;
 
@@ -134,11 +171,7 @@ new dashoffset;
 ///////////////////////////
 public OnPluginStart()
 {
-	PrecacheModel(MODEL_GRENADE, true);
-	PrecacheSound(SOUND_FAILED, true);
-	PrecacheSound(SOUND_EXPLOSION, true);
-	PrecacheSound(SOUND_THROW, true);
-	PrecacheSound(SOUND_SMOKE, true);
+	Precache();
 	
 	// C O N V A R S //
 	g_tfgoDefaultMoney = CreateConVar("tfgo_defaultmoney", "800", "Default amount of money a player recieves on start");
@@ -170,6 +203,10 @@ public OnPluginStart()
 	RegConsoleCmd("sm_buymenu", Command_TFGO_BuyMenu, "sm_buymenu");
 	RegConsoleCmd("sm_grenade", Command_TFGO_ThrowGrenade, "sm_grenade");
 	RegConsoleCmd("sm_smoke", Command_TFGO_ThrowSmoke, "sm_smoke");
+	
+	RegConsoleCmd("sm_voice1", Command_TFGO_VoiceGroupMenu);
+	RegConsoleCmd("sm_voice2", Command_TFGO_VoiceResponsesMenu);
+	RegConsoleCmd("sm_voice3", Command_TFGO_VoiceCommandMenu);
 	
 	// H O O K S //
 	HookEvent("player_death", Player_Death);
@@ -207,21 +244,18 @@ public OnPluginStart()
 		OnClientPostAdminCheck(client);
 	}
 	
-	AddFileToDownloadsTable("sound/tfgo/sg_explode.wav");
-	
 	TFGO_ReloadWeapons();
+	
+	VoiceMenu_VoiceResponses = BuildVoiceResponseMenu();
+	VoiceMenu_VoiceGroup = BuildVoiceGroupMenu();
+	VoiceMenu_VoiceCommand = BuildVoiceCommandMenu();
 }
 
 public void OnMapStart()
 {
 	TFGO_ReloadWeapons();
 	
-	// PRECACHE GRENADE
-	PrecacheModel(MODEL_GRENADE, true);
-	PrecacheSound(SOUND_FAILED, true);
-	PrecacheSound(SOUND_EXPLOSION, true);
-	
-	AddFileToDownloadsTable("sound/tfgo/sg_explode.wav");
+	Precache();
 }
 
 //////////////////////////////////
@@ -331,6 +365,8 @@ public player_spawn(Handle:event, const String:name[], bool:dontBroadcast)
 		CreateTimer(GetConVarFloat(g_tfgoBuyTime), timer_BuyTimeOver, client);
 	}
 	tfgo_canClientBuy[client] = true;
+	
+	g_velocityOffset = FindSendPropInfo("CBasePlayer", "m_vecVelocity[0]");
 	
 	// Below was just for debugging
 	//PrintToChatAll("Position: %f %f %f", pos[0], pos[1], pos[2]);
@@ -512,6 +548,27 @@ public SDKHooks_tfgoOnPreThink(client)
 }
 
 // ---- C O M M A N D S ----- //
+
+//////////////////////////
+//V O I C E   M E N U S //
+//////////////////////////
+public Action:Command_TFGO_VoiceGroupMenu(client, args)
+{
+	VoiceMenu_VoiceGroup.Display(client, MENU_TIME_FOREVER);
+	return Plugin_Handled;
+}
+
+public Action:Command_TFGO_VoiceCommandMenu(client, args)
+{
+	VoiceMenu_VoiceCommand.Display(client, MENU_TIME_FOREVER);
+	return Plugin_Handled;
+}
+
+public Action:Command_TFGO_VoiceResponsesMenu(client, args)
+{
+	VoiceMenu_VoiceResponses.Display(client, MENU_TIME_FOREVER);
+	return Plugin_Handled;
+}
 
 ///////////////////////////
 //S E T   G R E N A D E S//
@@ -1313,6 +1370,50 @@ Menu BuildBuyMenu()
 	return menu;
 }
 
+Menu BuildVoiceResponseMenu()
+{
+	Menu menu = new Menu(Menu_VoiceCommand);
+	menu.SetTitle("Radio Responses/Reports");
+	menu.AddItem("roger", "Affirmative/Roger");
+	menu.AddItem("enemys", "Enemy Spotted");
+	menu.AddItem("backup", "Need Backup");
+	menu.AddItem("clear", "Sector Clear");
+	menu.AddItem("position", "I'm in position");
+	menu.AddItem("reporting", "Reporting In");
+	menu.AddItem("blow", "She's gonna Blow!");
+	menu.AddItem("negative", "Negative");
+	menu.AddItem("enemyd", "Enemy Down");
+	
+	return menu;
+}
+
+Menu BuildVoiceGroupMenu()
+{
+	Menu menu = new Menu(Menu_VoiceCommand);
+	menu.SetTitle("Group Radio Commands");
+	menu.AddItem("go", "Go");
+	menu.AddItem("fallback", "Fall Back");
+	menu.AddItem("sticktog", "Stick Together Team");
+	menu.AddItem("getinpos", "Get in Position");
+	menu.AddItem("stormthefront", "Storm the Front");
+	
+	return menu;
+}
+
+Menu BuildVoiceCommandMenu()
+{
+	Menu menu = new Menu(Menu_VoiceCommand);
+	menu.SetTitle("Radio Commands");
+	menu.AddItem("coverme", "Cover Me");
+	menu.AddItem("takepoint", "You Take the Point");
+	menu.AddItem("holdpos", "Hold This Position");
+	menu.AddItem("regroup", "Regroup Team");
+	menu.AddItem("followme", "Follow Me");
+	menu.AddItem("needassis", "Taking Fire, Need Assistance");
+	
+	return menu;
+}
+
 Menu BuildBuyMenu_pistols()
 {
 	bool currentfound = false;
@@ -1435,13 +1536,25 @@ Menu BuildBuyMenu_grenades()
 	return menu;
 }
 
+public int Menu_VoiceCommand(Menu menu, MenuAction action, int param1, int param2)
+{
+	if (action == MenuAction_Select)
+	{
+		char info[32];
+		
+		menu.GetItem(param2, info, sizeof(info));
+		
+		PlayVoiceCommand(param1, info);
+	}
+}
+
 public int Menu_BuyMenu_buy(Menu menu, MenuAction action, int param1, int param2)
 {
 	if (action == MenuAction_Select)
 	{
 		char info[32];
 		
-		bool found = menu.GetItem(param2, info, sizeof(info));
+		menu.GetItem(param2, info, sizeof(info));
 		
 		if(StrEqual(info, "grenade_frag"))
 		{
@@ -1489,7 +1602,7 @@ public int Menu_BuyMenu(Menu menu, MenuAction action, int param1, int param2)
 	{
 		char info[32];
 		
-		bool found = menu.GetItem(param2, info, sizeof(info));
+		menu.GetItem(param2, info, sizeof(info));
 		
 		if(StrEqual(info, "pistol"))
 		{
@@ -1518,9 +1631,283 @@ public int Menu_BuyMenu(Menu menu, MenuAction action, int param1, int param2)
 //O T H E R   F U N C T I O N S//
 /////////////////////////////////
 
+// GAME FRAME
+public OnGameFrame()
+{
+	for (new i = 1; i <= MaxClients; i++)
+	{
+		new ref = tfgo_radioEnts[i];
+		if (ref != 0 && IsValidClient(i))
+		{
+			new ent = EntRefToEntIndex(ref);
+			if (ent > 0)
+			{
+				new Float:vOrigin[3];
+				GetClientEyePosition(i, vOrigin);
+				vOrigin[2] += 30.0;
+
+				new Float:vVelocity[3];
+				GetEntDataVector(i, g_velocityOffset, vVelocity);
+
+				TeleportEntity(ent, vOrigin, NULL_VECTOR, vVelocity);
+			}
+		}
+	}
+}
+
+stock Precache()
+{
+	// MATERIALS
+	PrecacheGeneric(SPRITE_RADIO_VMT, true);
+	PrecacheGeneric(SPRITE_RADIO_VTF, true);
+	
+	// MODELS
+	PrecacheModel(MODEL_GRENADE, true);
+	
+	// SOUNDS
+	PrecacheSound(SOUND_FAILED, true);
+	PrecacheSound(SOUND_EXPLOSION, true);
+	PrecacheSound(SOUND_THROW, true);
+	PrecacheSound(SOUND_SMOKE, true);
+	
+	// VOICE COMMANDS
+	PrecacheSound(SOUND_COMMAND_BLOW, true);
+	PrecacheSound(SOUND_COMMAND_CLEAR, true);
+	PrecacheSound(SOUND_COMMAND_GETINPOS, true);
+	PrecacheSound(SOUND_COMMAND_GO, true);
+	PrecacheSound(SOUND_COMMAND_REPORTIN, true);
+	PrecacheSound(SOUND_COMMAND_AFFIRM, true);
+	PrecacheSound(SOUND_COMMAND_BACKUP, true);
+	PrecacheSound(SOUND_COMMAND_COVERME, true);
+	PrecacheSound(SOUND_COMMAND_ENEMYS, true);
+	PrecacheSound(SOUND_COMMAND_FINHOLE, true);
+	PrecacheSound(SOUND_COMMAND_INPOS, true);
+	PrecacheSound(SOUND_COMMAND_REPORTING, true);
+	PrecacheSound(SOUND_COMMAND_ENEMYD, true);
+	PrecacheSound(SOUND_COMMAND_FALLBACK, true);
+	PrecacheSound(SOUND_COMMAND_FIREASSIS, true);
+	PrecacheSound(SOUND_COMMAND_FOLLOWME, true);
+	PrecacheSound(SOUND_COMMAND_LETSGO, true);
+	PrecacheSound(SOUND_COMMAND_LOCKNLOAD, true);
+	PrecacheSound(SOUND_COMMAND_MOVEOUT, true);
+	PrecacheSound(SOUND_COMMAND_NEGATIVE, true);
+	PrecacheSound(SOUND_COMMAND_POSITION, true);
+	PrecacheSound(SOUND_COMMAND_REGROUP, true);
+	PrecacheSound(SOUND_COMMAND_ROGER, true);
+	PrecacheSound(SOUND_COMMAND_STICKTOG, true);
+	PrecacheSound(SOUND_COMMAND_STORM	, true);
+	PrecacheSound(SOUND_COMMAND_TAKEPOINT, true);
+	
+	// Finally, add everything to the download table
+	char buffer[PLATFORM_MAX_PATH];
+	AddFileToDownloadsTable("sound/tfgo/sg_explode.wav");
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_BLOW);			AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_CLEAR);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_GETINPOS);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_GO);			AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_REPORTIN);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_AFFIRM);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_BACKUP);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_COVERME);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_ENEMYS);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_FINHOLE);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_INPOS);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_REPORTING);	AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_ENEMYD);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_FALLBACK); 	AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_FIREASSIS);	AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_FOLLOWME);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_LETSGO);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_LOCKNLOAD);	AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_MOVEOUT);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_NEGATIVE);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_POSITION);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_REGROUP);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_ROGER);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_STICKTOG);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_STORM);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_TAKEPOINT);	AddFileToDownloadsTable(buffer);
+	
+	AddFileToDownloadsTable(SPRITE_RADIO_VMT);
+	AddFileToDownloadsTable(SPRITE_RADIO_VTF);
+}
+
 stock SetSpeed(client, Float:flSpeed)
 {
 	SetEntPropFloat(client, Prop_Send, "m_flMaxspeed", flSpeed);
+}
+
+stock PlayVoiceCommand(client, String:info[])
+{
+	char sound[PLATFORM_MAX_PATH];
+	char message[64];
+	if(StrEqual(info, "roger"))
+	{
+		sound = SOUND_COMMAND_ROGER;
+		message = "Roger that.";
+	}
+	else if(StrEqual(info, "enemys"))
+	{
+		sound = SOUND_COMMAND_ENEMYS;
+		message = "Enemy Spotted!";
+	}
+	else if(StrEqual(info, "backup"))
+	{
+		sound = SOUND_COMMAND_BACKUP;
+		message = "Need Backup!";
+	}
+	else if(StrEqual(info, "clear"))
+	{
+		sound = SOUND_COMMAND_CLEAR;
+		message = "Sector Clear";
+	}
+	else if(StrEqual(info, "position"))
+	{
+		sound = SOUND_COMMAND_INPOS;
+		message = "I'm in position";
+	}
+	else if(StrEqual(info, "reporting"))
+	{
+		sound = SOUND_COMMAND_REPORTING;
+		message = "Reporting in";
+	}
+	else if(StrEqual(info, "blow"))
+	{
+		sound = SOUND_COMMAND_BLOW;
+		message = "Get out of here, it's gonna blow!";
+	}
+	else if(StrEqual(info, "negative"))
+	{
+		sound = SOUND_COMMAND_NEGATIVE;
+		message = "Negative.";
+	}
+	else if(StrEqual(info, "enemyd"))
+	{
+		sound = SOUND_COMMAND_ENEMYD;
+		message = "Enemy Down";
+	}
+	else if(StrEqual(info, "go"))
+	{
+		sound = SOUND_COMMAND_GO;
+		message = "Go Go Go!";
+	}
+	else if(StrEqual(info, "fallback"))
+	{
+		sound = SOUND_COMMAND_FALLBACK;
+		message = "Team, Fall Back!";
+	}
+	else if(StrEqual(info, "sticktog"))
+	{
+		sound = SOUND_COMMAND_STICKTOG;
+		message = "Stick together, Team.";
+	}
+	else if(StrEqual(info, "getinpos"))
+	{
+		sound = SOUND_COMMAND_GETINPOS;
+		message = "Get in position";
+	}
+	else if(StrEqual(info, "stormthefront"))
+	{
+		sound = SOUND_COMMAND_STORM;
+		message = "Storm the Front!";
+	}
+	else if(StrEqual(info, "coverme"))
+	{
+		sound = SOUND_COMMAND_COVERME;
+		message = "Cover me!";
+	}
+	else if(StrEqual(info, "takepoint"))
+	{
+		sound = SOUND_COMMAND_TAKEPOINT;
+		message = "You take the point";
+	}
+	else if(StrEqual(info, "holdpos"))
+	{
+		sound = SOUND_COMMAND_POSITION;
+		message = "Hold this position";
+	}
+	else if(StrEqual(info, "regroup"))
+	{
+		sound = SOUND_COMMAND_REGROUP;
+		message = "Regroup, team";
+	}
+	else if(StrEqual(info, "followme"))
+	{
+		sound = SOUND_COMMAND_FOLLOWME;
+		message = "Follow me!";
+	}
+	else if(StrEqual(info, "needassis"))
+	{
+		sound = SOUND_COMMAND_FIREASSIS;
+		message = "Taking fire, need Assistance!";
+	}
+	else
+	{
+		sound = "";
+		message = "ERROR";
+	}
+	
+	if(!StrEqual(message, "ERROR"))
+	{
+		for(int i = 1; i < MaxClients ; i++)
+		{
+			if(IsValidClient(i, false))
+			{
+				if(GetClientTeam(i) == GetClientTeam(client))
+				{
+					PrintToChat(i, "%N (radio): %s", client, message);
+					createRadioSprite(client);
+					EmitSoundToClient(i, sound);
+				}
+			}
+		}
+	}
+}
+
+stock createRadioSprite(client) {
+	new ent = CreateEntityByName("env_sprite_oriented");
+	if (ent) {
+		decl String:sprite[40];
+		decl String:spriteName[16];
+		
+		sprite = SPRITE_RADIO_VMT;
+		spriteName = "sprite_radio";
+		
+		DispatchKeyValue(ent, "model", sprite);
+		DispatchKeyValue(ent, "classname", "env_sprite_oriented");
+		DispatchKeyValue(ent, "spawnflags", "1");
+		DispatchKeyValue(ent, "scale", "1");
+		DispatchKeyValue(ent, "rendermode", "1");
+		DispatchKeyValue(ent, "rendercolor", "255 255 255");
+		DispatchKeyValue(ent, "targetname", spriteName);
+		DispatchSpawn(ent);
+		
+		new Float:vOrigin[3];
+		GetClientEyePosition(client, vOrigin);
+
+		vOrigin[2] += 30.0;
+
+		TeleportEntity(ent, vOrigin, NULL_VECTOR, NULL_VECTOR);
+		CreateTimer(2.0, timer_killSprite, client);
+		
+		tfgo_radioEnts[client] = EntIndexToEntRef(ent);
+		
+		SetEntityMoveType(ent, MOVETYPE_NOCLIP);
+	}
+}
+
+public Action:timer_killSprite(Handle:timer, any:client)
+{
+	new ref = tfgo_radioEnts[client];
+	if (ref != 0)
+	{
+		new ent = EntRefToEntIndex(ref);
+		if (ent > 0 && IsValidEntity(ent))
+		{
+			AcceptEntityInput(ent, "kill");
+		}
+		tfgo_radioEnts[client] = 0;
+	}
 }
 
 public bool:IsInteger(String:buffer[])
