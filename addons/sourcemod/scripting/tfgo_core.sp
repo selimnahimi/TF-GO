@@ -26,6 +26,7 @@
 #define SOUND_THROW 		"weapons/grenade_throw.wav"
 #define SOUND_FAILED 		"common/wpn_denyselect.wav"
 #define SOUND_EXPLOSION		"weapons/tacky_grenadier_explode3.wav"
+#define SOUND_SMOKE			"tfgo/sg_explode.wav"
 #define MODEL_GRENADE 		"models/weapons/w_models/w_grenade_frag.mdl"
 
 #define TOTALGRENADES		2
@@ -107,6 +108,7 @@ Handle g_tfgoGrenadeDmg;
 Handle g_tfgoGrenadeRadius;
 Handle g_tfgoGrenadeDelay;
 Handle g_tfgoGrenadeSpeed;
+Handle g_tfgoSmokeTime;
 
 // HUD elements
 Handle hudMoney;
@@ -136,6 +138,7 @@ public OnPluginStart()
 	PrecacheSound(SOUND_FAILED, true);
 	PrecacheSound(SOUND_EXPLOSION, true);
 	PrecacheSound(SOUND_THROW, true);
+	PrecacheSound(SOUND_SMOKE, true);
 	
 	// C O N V A R S //
 	g_tfgoDefaultMoney = CreateConVar("tfgo_defaultmoney", "800", "Default amount of money a player recieves on start");
@@ -155,6 +158,7 @@ public OnPluginStart()
 	g_tfgoGrenadeRadius = CreateConVar("tfgo_grenade_radius", "198.0", "Grenade explosion radius");
 	g_tfgoGrenadeDelay = CreateConVar("tfgo_grenade_delay", "3.0", "Grenade explosion delay, in seconds");
 	g_tfgoGrenadeSpeed = CreateConVar("tfgo_grenade_speed", "1000.0", "Speed of the grenade when thrown");
+	g_tfgoSmokeTime = CreateConVar("tfgo_grenade_smoke_time", "10.0", "Smoke grenade's lifetime, in seconds");
 	
 	// A D M I N   C O M M A N D S //
 	RegAdminCmd("sm_setmoney", Command_TFGO_Admin_SetMoney, ADMFLAG_ROOT, "sm_setmoney <amount> [player]");
@@ -165,6 +169,7 @@ public OnPluginStart()
 	RegConsoleCmd("sm_buy", Command_TFGO_BuyWeapon, "sm_buy <weaponID>");
 	RegConsoleCmd("sm_buymenu", Command_TFGO_BuyMenu, "sm_buymenu");
 	RegConsoleCmd("sm_grenade", Command_TFGO_ThrowGrenade, "sm_grenade");
+	RegConsoleCmd("sm_smoke", Command_TFGO_ThrowSmoke, "sm_smoke");
 	
 	// H O O K S //
 	HookEvent("player_death", Player_Death);
@@ -202,6 +207,8 @@ public OnPluginStart()
 		OnClientPostAdminCheck(client);
 	}
 	
+	AddFileToDownloadsTable("sound/tfgo/sg_explode.wav");
+	
 	TFGO_ReloadWeapons();
 }
 
@@ -213,6 +220,8 @@ public void OnMapStart()
 	PrecacheModel(MODEL_GRENADE, true);
 	PrecacheSound(SOUND_FAILED, true);
 	PrecacheSound(SOUND_EXPLOSION, true);
+	
+	AddFileToDownloadsTable("sound/tfgo/sg_explode.wav");
 }
 
 //////////////////////////////////
@@ -621,7 +630,7 @@ public Action:Command_TFGO_ThrowGrenade(client, args)
 			
 			ScaleVector(vecs, GetConVarFloat(g_tfgoGrenadeSpeed));
 			
-			// Create prop entity for the Dynamite Pack
+			// Create prop entity for the grenade
 			new grenade = CreateEntityByName("prop_physics_override");
 			if (IsValidEntity(grenade))
 			{
@@ -656,6 +665,161 @@ public Action:Command_TFGO_ThrowGrenade(client, args)
 	return Plugin_Handled;
 }
 
+/////////////////////////
+//T H R O W   S M O K E//
+/////////////////////////
+
+public Action:Command_TFGO_ThrowSmoke(client, args)
+{
+	if(IsValidClient(client) && IsClientReady(client))
+	{
+		// If there are too many entities, do not throw the grenade.
+		if (GetMaxEntities() - GetEntityCount() < 200)
+		{
+			PrintToServer("[TFGO] !ERROR! Cannot spawn grenade, too many entities exist. Try reloading the map.");
+			EmitSoundToClient(client, SOUND_FAILED, client, _, _, _, 1.0);
+			return Plugin_Handled;
+		}
+		
+		// Check if player has more than 0 smoke grenades
+		if (tfgo_clientGrenades[client][GRENADE_SMOKE] > 0)
+		{
+			decl Float:pos[3];
+			decl Float:ePos[3];
+			decl Float:angs[3];
+			decl Float:vecs[3];
+			GetClientEyePosition(client, pos);						// Get Eye position of the player
+			GetClientEyeAngles(client, angs);						// Get Eye angles of the player
+			GetAngleVectors(angs, vecs, NULL_VECTOR, NULL_VECTOR);	// Get the angle of the player
+			
+			// Set throw position to directly in front of player
+			pos[0] += vecs[0] * 32.0;
+			pos[1] += vecs[1] * 32.0;
+			
+			ScaleVector(vecs, GetConVarFloat(g_tfgoGrenadeSpeed));
+			
+			// Create prop entity for the smoke
+			new grenade = CreateEntityByName("prop_physics_override");
+			if (IsValidEntity(grenade))
+			{
+				DispatchKeyValue(grenade, "model", MODEL_GRENADE);
+				DispatchKeyValue(grenade, "solid", "6");
+				SetEntityGravity(grenade, 0.5);
+				SetEntPropFloat(grenade, Prop_Data, "m_flFriction", 0.8);
+				SetEntPropFloat(grenade, Prop_Send, "m_flElasticity", 0.45);
+				SetEntProp(grenade, Prop_Data, "m_CollisionGroup", 1);
+				SetEntProp(grenade, Prop_Data, "m_usSolidFlags", 0x18);
+				SetEntProp(grenade, Prop_Data, "m_nSolidType", 6); 
+				
+				DispatchKeyValue(grenade, "renderfx", "0");
+				DispatchKeyValue(grenade, "rendercolor", "255 255 255");
+				DispatchKeyValue(grenade, "renderamt", "255");					
+				SetEntPropEnt(grenade, Prop_Data, "m_hOwnerEntity", client);
+				DispatchSpawn(grenade);
+				TeleportEntity(grenade, pos, NULL_VECTOR, vecs);
+				
+				float delay = GetConVarFloat(g_tfgoGrenadeDelay);
+				CreateTimer(delay, Function_SmokeExplode, grenade);
+			}
+			EmitSoundToAll(SOUND_THROW, client, _, _, _, 1.0);
+			tfgo_clientGrenades[client][GRENADE_SMOKE] --;
+		}
+		else
+		{
+			EmitSoundToClient(client, SOUND_FAILED, client, _, _, _, 1.0);
+			return Plugin_Handled;
+		}
+	}
+	return Plugin_Handled;
+}
+
+/////////////////////////////////
+//S M O K E   E X P L O S I O N//
+/////////////////////////////////
+
+public Action:Function_SmokeExplode(Handle:timer, any:grenade)
+{
+	new Float:delay = GetConVarFloat(g_tfgoSmokeTime);
+	new String:SmokeTransparency[32];
+	
+	decl Float:pos[3];
+	GetEntPropVector(grenade, Prop_Data, "m_vecOrigin", pos);
+	
+	EmitAmbientSound(SOUND_SMOKE, pos, SOUND_FROM_WORLD, SNDLEVEL_NORMAL, SND_NOFLAGS, SNDVOL_NORMAL, 100, 0.0);
+	
+	new String:originData[64];
+	Format(originData, sizeof(originData), "%f %f %f", pos[0], pos[1], pos[2]);
+	
+	AcceptEntityInput(grenade, "Kill");
+	new SmokeEnt = CreateEntityByName("env_smokestack");
+	
+	if(SmokeEnt)
+	{
+		// Create the Smoke
+		new String:SName[128];
+		Format(SName, sizeof(SName), "Smoke%i", grenade);
+		DispatchKeyValue(SmokeEnt,"targetname", SName);
+		DispatchKeyValue(SmokeEnt,"Origin", originData);
+		DispatchKeyValue(SmokeEnt,"BaseSpread", "100");
+		DispatchKeyValue(SmokeEnt,"SpreadSpeed", "20");
+		DispatchKeyValue(SmokeEnt,"Speed", "50");
+		DispatchKeyValue(SmokeEnt,"StartSize", "300");
+		DispatchKeyValue(SmokeEnt,"EndSize", "2");
+		DispatchKeyValue(SmokeEnt,"Rate", "100");
+		DispatchKeyValue(SmokeEnt,"JetLength", "300");
+		DispatchKeyValue(SmokeEnt,"Twist", "20"); 
+		DispatchKeyValue(SmokeEnt,"RenderColor", "150 150 150"); //red green blue
+		DispatchKeyValue(SmokeEnt,"RenderAmt", "255");
+		DispatchKeyValue(SmokeEnt,"SmokeMaterial", "particle/particle_smokegrenade1.vmt");
+		
+		DispatchSpawn(SmokeEnt);
+		AcceptEntityInput(SmokeEnt, "TurnOn");
+		
+		new Handle:pack;
+		CreateDataTimer(delay, Timer_KillSmoke, pack);
+		WritePackCell(pack, SmokeEnt);
+		
+		//Start timer to remove smoke
+		new Float:longerdelay = 5.0 + delay;
+		new Handle:pack2;
+		CreateDataTimer(longerdelay, Timer_StopSmoke, pack2);
+		WritePackCell(pack2, SmokeEnt);
+	}
+}
+
+public Action:Timer_KillSmoke(Handle:timer, Handle:pack)
+{	
+	ResetPack(pack);
+	new SmokeEnt = ReadPackCell(pack);
+	
+	StopSmokeEnt(SmokeEnt);
+}
+
+public Action:Timer_StopSmoke(Handle:timer, Handle:pack)
+{	
+	ResetPack(pack);
+	new SmokeEnt = ReadPackCell(pack);
+	
+	RemoveSmokeEnt(SmokeEnt);
+}
+
+StopSmokeEnt(target)
+{
+
+	if (IsValidEntity(target))
+	{
+		AcceptEntityInput(target, "TurnOff");
+	}
+}
+
+RemoveSmokeEnt(target)
+{
+	if (IsValidEntity(target))
+	{
+		AcceptEntityInput(target, "Kill");
+	}
+}
+
 /////////////////////////////////////
 //G R E N A D E   E X P L O S I O N//
 /////////////////////////////////////
@@ -673,17 +837,16 @@ public Action:Function_GrenadeExplode(Handle:timer, any:grenade)
 		decl Float:pos[3];
 		GetEntPropVector(grenade, Prop_Data, "m_vecOrigin", pos);
 		
-		// Play corny "explode" sound
 		EmitAmbientSound(SOUND_EXPLOSION, pos, SOUND_FROM_WORLD, SNDLEVEL_NORMAL, SND_NOFLAGS, SNDVOL_NORMAL, 100, 0.0);
 		
 		// Raise the position up a bit
 		pos[2] += 32.0;
 
-		// Get the owner of the Dynamite Pack, and which team he's on
+		// Get the owner of the grenade, and which team its on
 		new client = GetEntPropEnt(grenade, Prop_Data, "m_hOwnerEntity");
 		new team = GetEntProp(client, Prop_Send, "m_iTeamNum");
 		
-		// Kill the Dynamite Pack entity
+		// Kill the grenade entity
 		AcceptEntityInput(grenade, "Kill");
 		
 		// Set up the explosion
@@ -968,6 +1131,7 @@ public TFGO_ReloadWeapons()
 	}
 	
 	bool hegrenade_found = false;
+	bool smoke_found = false;
 	// GRENADES
 	for (new i = 1; KvizExists(kv, "grenadeprices:nth-child(%i)", i); i++) {
 		decl String:id[32];
@@ -979,11 +1143,23 @@ public TFGO_ReloadWeapons()
 			tfgo_grenades[GRENADE_FRAG][0] = price;
 			hegrenade_found = true;
 		}
+		else if(StrEqual(id, "smokegrenade"))
+		{
+			decl price;
+			KvizGetNumExact(kv, price, "grenadeprices:nth-child(%i).price", i);
+			tfgo_grenades[GRENADE_SMOKE][0] = price;
+			smoke_found = true;
+		}
 	}
 	if(!hegrenade_found)
 	{
 		tfgo_grenades[GRENADE_FRAG][0] = 200;
 		PrintToServer("[TFGO] Couldn't find hegrenade in config, setting hardcoded price ($200)");
+	}
+	if(!smoke_found)
+	{
+		tfgo_grenades[GRENADE_SMOKE][0] = 200;
+		PrintToServer("[TFGO] Couldn't find smokegrenade in config, setting hardcoded price ($200)");
 	}
 	
 	KvizClose(kv);
@@ -1252,6 +1428,7 @@ Menu BuildBuyMenu_grenades()
 	menu.SetTitle("Grenades");
 	
 	menu.AddItem("grenade_frag", "HE Grenade");
+	menu.AddItem("grenade_smoke", "Smoke Grenade");
 	
 	menu.ExitBackButton = true;
 	
@@ -1268,7 +1445,7 @@ public int Menu_BuyMenu_buy(Menu menu, MenuAction action, int param1, int param2
 		
 		if(StrEqual(info, "grenade_frag"))
 		{
-			if(tfgo_clientWeapons[param1][4] == GRENADE_FRAG && tfgo_clientWeapons[param1][5] > 0)
+			if(tfgo_clientGrenades[param1][GRENADE_FRAG] > 0)
 			{
 				PrintToChat(param1, "[TFGO] You can't carry any more!");
 			}
@@ -1276,6 +1453,18 @@ public int Menu_BuyMenu_buy(Menu menu, MenuAction action, int param1, int param2
 			{
 				tfgo_clientGrenades[param1][GRENADE_FRAG]++;
 				PrintToChat(param1, "[TFGO] Bought HE Grenade for $%i", tfgo_grenades[GRENADE_FRAG][0]);
+			}
+		}
+		else if(StrEqual(info, "grenade_smoke"))
+		{
+			if(tfgo_clientGrenades[param1][GRENADE_SMOKE] > 0)
+			{
+				PrintToChat(param1, "[TFGO] You can't carry any more!");
+			}
+			else
+			{
+				tfgo_clientGrenades[param1][GRENADE_SMOKE]++;
+				PrintToChat(param1, "[TFGO] Bought Smoke Grenade for $%i", tfgo_grenades[GRENADE_SMOKE][0]);
 			}
 		}
 		else
