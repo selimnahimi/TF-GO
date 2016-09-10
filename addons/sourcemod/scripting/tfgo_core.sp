@@ -115,6 +115,8 @@ int tfgo_clientGrenades[MAXPLAYERS+1][TOTALGRENADES+1];	// Amount of grenades of
 float tfgo_clientSpawnPos[MAXPLAYERS+1][3]; 				// Save the position where a specific player spawned at to check buyzone distance.
 bool tfgo_canClientBuy[MAXPLAYERS+1];					// Is the player in the bounds of the buytime?
 int tfgo_radioEnts[MAXPLAYERS+1];						// Radio sprite entities
+bool tfgo_canThrowGrenade[MAXPLAYERS+1];					// Can the player throw a grenade?
+bool tfgo_canTalk[MAXPLAYERS+1];							// Can the player play a voice command?
 
 new g_velocityOffset;
 
@@ -222,6 +224,8 @@ public OnPluginStart()
 	for(int i = 1; i <= MaxClients; i++)
 	{
 		tfgo_player_money[i] = GetConVarInt(g_tfgoDefaultMoney);
+		tfgo_canThrowGrenade[i] = true;
+		tfgo_canTalk[i] = true;
 		for(int b = 0 ; b < 3 ; b++)
 		{
 			tfgo_clientWeapons[i][b] = -1;
@@ -365,6 +369,7 @@ public player_spawn(Handle:event, const String:name[], bool:dontBroadcast)
 		CreateTimer(GetConVarFloat(g_tfgoBuyTime), timer_BuyTimeOver, client);
 	}
 	tfgo_canClientBuy[client] = true;
+	tfgo_canThrowGrenade[client] = true;
 	
 	g_velocityOffset = FindSendPropInfo("CBasePlayer", "m_vecVelocity[0]");
 	
@@ -387,7 +392,7 @@ public Action:timer_SetPlayerHealth(Handle:timer, any:client)
 /////////////////////////////////
 //P L A Y E R   R E S U P P L Y//
 /////////////////////////////////
-public event_PlayerResupply(Handle:event, const String:name[], bool:dontBroadcast) // Resupply instead of spawn
+public event_PlayerResupply(Handle:event, const String:name[], bool:dontBroadcast)
 {
 	new client = GetClientOfUserId(GetEventInt(event, "userid"));
 	CreateTimer(0.1, timer_PlayerResupply, client); // Delay to avoid bugs
@@ -660,7 +665,7 @@ public Action:Command_TFGO_GiveGrenade(client, args)
 /////////////////////////////
 public Action:Command_TFGO_ThrowGrenade(client, args)
 {
-	if(IsValidClient(client) && IsClientReady(client))
+	if(IsValidClient(client) && IsClientReady(client) && tfgo_canThrowGrenade[client])
 	{
 		// If there are too many entities, do not throw the grenade.
 		if (GetMaxEntities() - GetEntityCount() < 200)
@@ -712,6 +717,10 @@ public Action:Command_TFGO_ThrowGrenade(client, args)
 			}
 			EmitSoundToAll(SOUND_THROW, client, _, _, _, 1.0);
 			tfgo_clientGrenades[client][GRENADE_FRAG] --;
+			PlayVoiceCommand(client, "fragout");
+			
+			tfgo_canThrowGrenade[client] = false;
+			CreateTimer(2.1, timer_canThrowGrenade, client);
 		}
 		else
 		{
@@ -720,6 +729,16 @@ public Action:Command_TFGO_ThrowGrenade(client, args)
 		}
 	}
 	return Plugin_Handled;
+}
+
+public Action:timer_canThrowGrenade(Handle:timer, any:client)
+{
+	tfgo_canThrowGrenade[client] = true;
+}
+
+public Action:timer_canTalk(Handle:timer, any:client)
+{
+	tfgo_canTalk[client] = true;
 }
 
 /////////////////////////
@@ -780,6 +799,7 @@ public Action:Command_TFGO_ThrowSmoke(client, args)
 			}
 			EmitSoundToAll(SOUND_THROW, client, _, _, _, 1.0);
 			tfgo_clientGrenades[client][GRENADE_SMOKE] --;
+			PlayVoiceCommand(client, "smokeout");
 		}
 		else
 		{
@@ -1841,6 +1861,16 @@ stock PlayVoiceCommand(client, String:info[])
 		sound = SOUND_COMMAND_FIREASSIS;
 		message = "Taking fire, need Assistance!";
 	}
+	else if(StrEqual(info, "fragout"))
+	{
+		sound = SOUND_COMMAND_FINHOLE;
+		message = "Fire in the Hole!";
+	}
+	else if(StrEqual(info, "smokeout"))
+	{
+		sound = SOUND_COMMAND_FINHOLE;
+		message = "Fire in the Hole!";
+	}
 	else
 	{
 		sound = "";
@@ -1849,15 +1879,23 @@ stock PlayVoiceCommand(client, String:info[])
 	
 	if(!StrEqual(message, "ERROR"))
 	{
-		for(int i = 1; i < MaxClients ; i++)
+		if(tfgo_canTalk[client] || StrEqual(info, "smokeout") || StrEqual(info, "fragout"))
 		{
-			if(IsValidClient(i, false))
+			for(int i = 1; i < MaxClients ; i++)
 			{
-				if(GetClientTeam(i) == GetClientTeam(client))
+				if(IsValidClient(i, false))
 				{
-					PrintToChat(i, "%N (radio): %s", client, message);
-					createRadioSprite(client);
-					EmitSoundToClient(i, sound);
+					if(GetClientTeam(i) == GetClientTeam(client))
+					{
+						PrintToChat(i, "%N (radio): %s", client, message);
+						if(tfgo_canTalk[client])
+						{
+							createRadioSprite(client);
+							EmitSoundToClient(i, sound);
+							tfgo_canTalk[client] = false;
+							CreateTimer(2.1, timer_canTalk, client);
+						}
+					}
 				}
 			}
 		}
