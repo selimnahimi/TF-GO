@@ -23,11 +23,14 @@
 #pragma semicolon 1
 
 #define PLUGIN_VERSION 		"1.0.0"
+
 #define SOUND_THROW 		"weapons/grenade_throw.wav"
 #define SOUND_FAILED 		"common/wpn_denyselect.wav"
 #define SOUND_EXPLOSION		"weapons/tacky_grenadier_explode3.wav"
 #define SOUND_SMOKE			"tfgo/sg_explode.wav"
 #define MODEL_GRENADE 		"models/weapons/w_models/w_grenade_frag.mdl"
+
+#define SOUND_BUY			"items/gunpickup2.wav"
 
 #define SOUND_COMMAND_BLOW		"tfgo/radio/blow.wav"
 #define SOUND_COMMAND_CLEAR		"tfgo/radio/clear.wav"
@@ -144,6 +147,8 @@ Handle g_tfgoGrenadeRadius;
 Handle g_tfgoGrenadeDelay;
 Handle g_tfgoGrenadeSpeed;
 Handle g_tfgoSmokeTime;
+Handle g_tfgoGrenadeSpam;
+Handle g_tfgoGrenadeThrowDelay;
 
 // HUD elements
 Handle hudMoney;
@@ -182,7 +187,7 @@ public OnPluginStart()
 	g_tfgoMoneyOnWin = CreateConVar("tfgo_moneyonwin", "3000", "After winning, the players in the winning team recieves $X");
 	g_tfgoMoneyOnLose = CreateConVar("tfgo_moneyonlose", "1000", "After losing, the players in the losing team recieves $X");
 	g_tfgoMaxMoney = CreateConVar("tfgo_maxmoney", "16000", "Maximum money a player can reach in total");
-	g_tfgoSpeed = CreateConVar("tfgo_speed", "250.0", "Speed of players");
+	g_tfgoSpeed = CreateConVar("tfgo_speed", "250.0", "Speed of players, -1 to disable");
 	g_tfgoBuyTime = CreateConVar("tfgo_buytime", "30", "Buy time in seconds, -1 for infinite");
 	g_tfgoDefaultMelee = CreateConVar("tfgo_default_melee", "461", "Default melee weapon on spawn, -1 to disable");
 	g_tfgoDefaultSecondary = CreateConVar("tfgo_default_secondary", "23", "Default secondary weapon on spawn, -1 to disable");
@@ -194,6 +199,8 @@ public OnPluginStart()
 	g_tfgoGrenadeDelay = CreateConVar("tfgo_grenade_delay", "3.0", "Grenade explosion delay, in seconds");
 	g_tfgoGrenadeSpeed = CreateConVar("tfgo_grenade_speed", "1000.0", "Speed of the grenade when thrown");
 	g_tfgoSmokeTime = CreateConVar("tfgo_grenade_smoke_time", "10.0", "Smoke grenade's lifetime, in seconds");
+	g_tfgoGrenadeSpam = CreateConVar("tfgo_grenade_spam", "0", "0: 2 second delay between grenade throws, 1: no delay");
+	g_tfgoGrenadeThrowDelay = CreateConVar("tfgo_grenade_cooldown", "2.0", "Time in seconds between 2 grenade throws");
 	
 	// A D M I N   C O M M A N D S //
 	RegAdminCmd("sm_setmoney", Command_TFGO_Admin_SetMoney, ADMFLAG_ROOT, "sm_setmoney <amount> [player]");
@@ -215,6 +222,8 @@ public OnPluginStart()
 	HookEvent("post_inventory_application", event_PlayerResupply);
 	HookEvent("player_spawn", player_spawn); 
 	HookEvent("teamplay_round_win", teamplay_round_win);
+	HookEvent("teamplay_round_active", teamplay_round_active);
+	//HookEvent("teamplay_waiting_begins", teamplay_waiting_begins);
 	
 	// H U D   E L E M E N T S //
 	hudMoney = CreateHudSynchronizer();
@@ -305,6 +314,41 @@ public Action:DrawHud(Handle:timer, any:client)
 
 // ---- E V E N T S ---- //
 
+///////////////////////////
+//R O U N D   A C T I V E//
+///////////////////////////
+public teamplay_round_active(Handle:event, const String:name[], bool:dontBroadcast)
+{
+	CreateTimer(4.0, timer_roundactive);
+}
+
+public Action:timer_roundactive(Handle:timer)
+{
+	bool found1 = false; bool found2 = false;
+	int random = GetRandomInt(0, 2);
+	char command[64];
+	if(random == 0) 			command = "letsmove";
+	else if(random == 1) 		command = "letsgo";
+	else if(random == 2) 		command = "locknload";
+	
+	for(int i = 0; i < MaxClients ; i++)
+	{
+		if(IsValidClient(i))
+		{
+			if(GetClientTeam(i) == 2 && !found1)
+			{
+				PlayVoiceCommand(i, command);
+				found1 = true;
+			}
+			else if(GetClientTeam(i) == 3 && !found2)
+			{
+				PlayVoiceCommand(i, command);
+				found2 = true;
+			}
+		}
+	}
+}
+
 /////////////////////
 //R O U N D   W I N//
 /////////////////////
@@ -372,6 +416,8 @@ public player_spawn(Handle:event, const String:name[], bool:dontBroadcast)
 	tfgo_canThrowGrenade[client] = true;
 	
 	g_velocityOffset = FindSendPropInfo("CBasePlayer", "m_vecVelocity[0]");
+	
+	BuyMenu.Display(client, MENU_TIME_FOREVER);
 	
 	// Below was just for debugging
 	//PrintToChatAll("Position: %f %f %f", pos[0], pos[1], pos[2]);
@@ -549,7 +595,7 @@ public Action:timerJump(Handle:timer)
 public SDKHooks_tfgoOnPreThink(client)
 {
 	float speed = GetConVarFloat(g_tfgoSpeed);
-	if(IsValidClient(client)) SetSpeed(client, speed);
+	if(IsValidClient(client) && speed > 0.0) SetSpeed(client, speed);
 }
 
 // ---- C O M M A N D S ----- //
@@ -665,7 +711,7 @@ public Action:Command_TFGO_GiveGrenade(client, args)
 /////////////////////////////
 public Action:Command_TFGO_ThrowGrenade(client, args)
 {
-	if(IsValidClient(client) && IsClientReady(client) && tfgo_canThrowGrenade[client])
+	if(IsValidClient(client) && IsClientReady(client) && (tfgo_canThrowGrenade[client] || GetConVarBool(g_tfgoGrenadeSpam)))
 	{
 		// If there are too many entities, do not throw the grenade.
 		if (GetMaxEntities() - GetEntityCount() < 200)
@@ -719,8 +765,11 @@ public Action:Command_TFGO_ThrowGrenade(client, args)
 			tfgo_clientGrenades[client][GRENADE_FRAG] --;
 			PlayVoiceCommand(client, "fragout");
 			
-			tfgo_canThrowGrenade[client] = false;
-			CreateTimer(2.1, timer_canThrowGrenade, client);
+			if(!GetConVarBool(g_tfgoGrenadeSpam))
+			{
+				tfgo_canThrowGrenade[client] = false;
+				CreateTimer(GetConVarFloat(g_tfgoGrenadeThrowDelay)+0.1, timer_canThrowGrenade, client);
+			}
 		}
 		else
 		{
@@ -747,7 +796,7 @@ public Action:timer_canTalk(Handle:timer, any:client)
 
 public Action:Command_TFGO_ThrowSmoke(client, args)
 {
-	if(IsValidClient(client) && IsClientReady(client))
+	if(IsValidClient(client) && IsClientReady(client) && (tfgo_canThrowGrenade[client] || GetConVarBool(g_tfgoGrenadeSpam)))
 	{
 		// If there are too many entities, do not throw the grenade.
 		if (GetMaxEntities() - GetEntityCount() < 200)
@@ -800,6 +849,12 @@ public Action:Command_TFGO_ThrowSmoke(client, args)
 			EmitSoundToAll(SOUND_THROW, client, _, _, _, 1.0);
 			tfgo_clientGrenades[client][GRENADE_SMOKE] --;
 			PlayVoiceCommand(client, "smokeout");
+			
+			if(!GetConVarBool(g_tfgoGrenadeSpam))
+			{
+				tfgo_canThrowGrenade[client] = false;
+				CreateTimer(GetConVarFloat(g_tfgoGrenadeThrowDelay)+0.1, timer_canThrowGrenade, client);
+			}
 		}
 		else
 		{
@@ -1045,6 +1100,7 @@ public Action:Command_TFGO_BuyWeapon(client, args)
 			TF2Items_GiveWeapon(client, givewepid);
 			
 			// Show on HUD and in chat
+			EmitSoundToAll(SOUND_BUY, client, _, _, _, 1.0);
 			SetHudTextParams(0.14, 0.93, 2.0, 255, 200, 100, 150, 1);
 			ShowSyncHudText(client, hudPlus1, "-$%i", pr);
 			PrintToChat(client, "[TFGO] Bought %s for $%i", wpnname, pr);
@@ -1584,8 +1640,19 @@ public int Menu_BuyMenu_buy(Menu menu, MenuAction action, int param1, int param2
 			}
 			else
 			{
-				tfgo_clientGrenades[param1][GRENADE_FRAG]++;
-				PrintToChat(param1, "[TFGO] Bought HE Grenade for $%i", tfgo_grenades[GRENADE_FRAG][0]);
+				if(tfgo_player_money[param1] >= tfgo_grenades[GRENADE_FRAG][0])
+				{
+					tfgo_clientGrenades[param1][GRENADE_FRAG]++;
+					tfgo_player_money[param1] -= tfgo_grenades[GRENADE_FRAG][0];
+					EmitSoundToAll(SOUND_BUY, param1, _, _, _, 1.0);
+					PrintToChat(param1, "[TFGO] Bought HE Grenade for $%i", tfgo_grenades[GRENADE_FRAG][0]);
+					SetHudTextParams(0.14, 0.93, 2.0, 255, 200, 100, 150, 1);
+					ShowSyncHudText(param1, hudPlus1, "-$%i", tfgo_grenades[GRENADE_FRAG][0]);
+				}
+				else
+				{
+					PrintToChat(param1, "[TFGO] Not enough money! Price: $%i", tfgo_grenades[GRENADE_FRAG][0]);
+				}
 			}
 		}
 		else if(StrEqual(info, "grenade_smoke"))
@@ -1596,8 +1663,19 @@ public int Menu_BuyMenu_buy(Menu menu, MenuAction action, int param1, int param2
 			}
 			else
 			{
-				tfgo_clientGrenades[param1][GRENADE_SMOKE]++;
-				PrintToChat(param1, "[TFGO] Bought Smoke Grenade for $%i", tfgo_grenades[GRENADE_SMOKE][0]);
+				if(tfgo_player_money[param1] >= tfgo_grenades[GRENADE_SMOKE][0])
+				{
+					tfgo_clientGrenades[param1][GRENADE_SMOKE]++;
+					tfgo_player_money[param1] -= tfgo_grenades[GRENADE_SMOKE][0];
+					EmitSoundToAll(SOUND_BUY, param1, _, _, _, 1.0);
+					PrintToChat(param1, "[TFGO] Bought Smoke Grenade for $%i", tfgo_grenades[GRENADE_SMOKE][0]);
+					SetHudTextParams(0.14, 0.93, 2.0, 255, 200, 100, 150, 1);
+					ShowSyncHudText(param1, hudPlus1, "-$%i", tfgo_grenades[GRENADE_SMOKE][0]);
+				}
+				else
+				{
+					PrintToChat(param1, "[TFGO] Not enough money! Price: $%i", tfgo_grenades[GRENADE_SMOKE][0]);
+				}
 			}
 		}
 		else
@@ -1689,6 +1767,7 @@ stock Precache()
 	PrecacheSound(SOUND_EXPLOSION, true);
 	PrecacheSound(SOUND_THROW, true);
 	PrecacheSound(SOUND_SMOKE, true);
+	PrecacheSound(SOUND_BUY, true);
 	
 	// VOICE COMMANDS
 	PrecacheSound(SOUND_COMMAND_BLOW, true);
@@ -1861,6 +1940,21 @@ stock PlayVoiceCommand(client, String:info[])
 		sound = SOUND_COMMAND_FIREASSIS;
 		message = "Taking fire, need Assistance!";
 	}
+	else if(StrEqual(info, "letsgo"))
+	{
+		sound = SOUND_COMMAND_LETSGO;
+		message = "NONE";
+	}
+	else if(StrEqual(info, "letsmove"))
+	{
+		sound = SOUND_COMMAND_MOVEOUT;
+		message = "NONE";
+	}
+	else if(StrEqual(info, "locknload"))
+	{
+		sound = SOUND_COMMAND_LOCKNLOAD;
+		message = "NONE";
+	}
 	else if(StrEqual(info, "fragout"))
 	{
 		sound = SOUND_COMMAND_FINHOLE;
@@ -1877,6 +1971,8 @@ stock PlayVoiceCommand(client, String:info[])
 		message = "ERROR";
 	}
 	
+	if(!IsValidClient(client)) message = "ERROR";
+	
 	if(!StrEqual(message, "ERROR"))
 	{
 		if(tfgo_canTalk[client] || StrEqual(info, "smokeout") || StrEqual(info, "fragout"))
@@ -1887,16 +1983,16 @@ stock PlayVoiceCommand(client, String:info[])
 				{
 					if(GetClientTeam(i) == GetClientTeam(client))
 					{
-						PrintToChat(i, "%N (radio): %s", client, message);
-						if(tfgo_canTalk[client])
-						{
-							createRadioSprite(client);
-							EmitSoundToClient(i, sound);
-							tfgo_canTalk[client] = false;
-							CreateTimer(2.1, timer_canTalk, client);
-						}
+						if(!StrEqual(message, "NONE")) PrintToChat(i, "%N (radio): %s", client, message);
+						EmitSoundToClient(i, sound);
 					}
 				}
+			}
+			if(tfgo_canTalk[client])
+			{
+				createRadioSprite(client);
+				tfgo_canTalk[client] = false;
+				CreateTimer(2.1, timer_canTalk, client);
 			}
 		}
 	}
