@@ -1845,6 +1845,13 @@ public OnGameFrame()
 			}
 		}
 	}
+	for (new i=1;i<MaxClients; i++)
+	{
+		if (IsClientInGame(i)&&IsPlayerAlive(i))
+		{
+			TF2_AddCondition(i, TFCond_Healing, 1.0);
+		}
+	}
 }
 
 stock Precache()
@@ -2218,7 +2225,7 @@ public bool GiveCustomWeapon(client, id)
 		new weapon;
 		if(tfgo_weapons[id][2] == WEAPON_PISTOL)
 		{
-			weapon = GetPlayerWeaponSlot(client, 2);
+			weapon = GetPlayerWeaponSlot(client, 1);
 		}
 		else if(tfgo_weapons[id][2] == WEAPON_SMG)
 		{
