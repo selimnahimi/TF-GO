@@ -29,6 +29,7 @@
 #define SOUND_EXPLOSION		"weapons/tacky_grenadier_explode3.wav"
 #define SOUND_SMOKE			"tfgo/sg_explode.wav"
 #define MODEL_GRENADE 		"models/weapons/w_models/w_grenade_frag.mdl"
+#define MODEL_MOLOTOV		"models/props_junk/garbage_glassbottle003a.mdl"
 
 #define SOUND_BUY			"items/gunpickup2.wav"
 
@@ -62,9 +63,10 @@
 #define SPRITE_RADIO_VMT		"materials/tfgo/radio_icon.vmt"
 #define SPRITE_RADIO_VTF		"materials/tfgo/radio_icon.vtf"
 
-#define TOTALGRENADES		2
+#define TOTALGRENADES		3
 #define GRENADE_FRAG		1
 #define GRENADE_SMOKE		2
+#define GRENADE_MOLOTOV		3
 
 #define WEAPON_PISTOL		1
 #define WEAPON_SMG			2
@@ -128,6 +130,9 @@ bool tfgo_canTalk[MAXPLAYERS+1];							// Can the player play a voice command?
 bool tfgo_canSwitchClass[MAXPLAYERS+1];					// Can the player switch classes?
 
 new g_velocityOffset;
+
+bool tfgo_warmupmode = false;
+bool tfgo_roundisgoing = false;
 
 // Weapons
 new String:tfgo_weapons_name[256][32];
@@ -221,6 +226,8 @@ public OnPluginStart()
 	RegConsoleCmd("sm_buymenu", Command_TFGO_BuyMenu, "sm_buymenu");
 	RegConsoleCmd("sm_grenade", Command_TFGO_ThrowGrenade, "sm_grenade");
 	RegConsoleCmd("sm_smoke", Command_TFGO_ThrowSmoke, "sm_smoke");
+	//RegConsoleCmd("sm_molotov", Command_TFGO_ThrowMolotov, "sm_molotov");
+	// ^^^ molotovs don't work, just yet.
 	
 	RegConsoleCmd("sm_voice1", Command_TFGO_VoiceGroupMenu);
 	RegConsoleCmd("sm_voice2", Command_TFGO_VoiceResponsesMenu);
@@ -233,7 +240,6 @@ public OnPluginStart()
 	HookEvent("teamplay_round_win", teamplay_round_win);
 	HookEvent("teamplay_round_active", teamplay_round_active);
 	HookEvent("player_changeclass", player_changeclass, EventHookMode_Pre);
-	//HookEvent("teamplay_waiting_begins", teamplay_waiting_begins);
 	
 	// H U D   E L E M E N T S //
 	hudMoney = CreateHudSynchronizer();
@@ -277,6 +283,16 @@ public OnPluginStart()
 	AutoExecConfig(true, "tfgo_config");
 }
 
+/////////////////////////////
+//P L U G I N   U N L O A D//
+/////////////////////////////
+/*
+public OnPluginEnd()
+{
+	
+}
+*/
+
 public void OnMapStart()
 {
 	TFGO_ReloadWeapons();
@@ -298,12 +314,18 @@ public OnClientPostAdminCheck(client)
 		tfgo_clientGrenades[client][b] = 0;
 	}
 	
-	tfgo_player_money[client] = GetConVarInt(g_tfgoDefaultMoney); // Set the player's money to default
-	
 	if(IsValidClient(client, false) && client != 0)
 	{
 		tfgo_MoneyHUD[client] = CreateTimer(5.0, DrawHud, client); // Create a HUD timer for the player
 		SDKHook(client, SDKHook_PreThink, SDKHooks_tfgoOnPreThink); // Create prethink for Speed changing
+		if(tfgo_warmupmode)
+		{
+			tfgo_player_money[client] = GetConVarInt(g_tfgoMaxMoney); // Set the player's money to max, as it's warmup
+		}
+		else
+		{
+			tfgo_player_money[client] = GetConVarInt(g_tfgoDefaultMoney); // Set the player's money to default
+		}
 	}
 }
 
@@ -353,7 +375,57 @@ public player_changeclass(Handle:event, const char[] name, bool:dontBroadcast)
 ///////////////////////////
 public teamplay_round_active(Handle:event, const String:name[], bool:dontBroadcast)
 {
+	// Delay it because the actual event happens 4 seconds before it should??
 	CreateTimer(4.0, timer_roundactive);
+	CreateTimer(10.0, timer_disallowspawn);
+}
+
+public Action:timer_disallowspawn(Handle:timer)
+{
+	if(!tfgo_warmupmode)
+		tfgo_roundisgoing = true;
+}
+
+///////////////////////////////////////////////////////////
+//W A R M U P   ( W A I T I N G   F O R   P L A Y E R S )//
+///////////////////////////////////////////////////////////
+public void TF2_OnWaitingForPlayersStart()
+{
+	tfgo_warmupmode = true;
+	tfgo_roundisgoing = false;
+	for(new i = 0;i < MaxClients;i++)
+	{
+		if(IsValidClient(i, false))
+		{
+			if(GetClientTeam(i) == TF_TEAM_BLU || GetClientTeam(i) == TF_TEAM_RED)
+			{
+				tfgo_player_money[i] = GetConVarInt(g_tfgoMaxMoney);
+				TF2_RespawnPlayer(i);
+			}
+		}
+	}
+	PrintToChatAll("[TFGO] Warmup Started");
+}
+
+public void TF2_OnWaitingForPlayersEnd()
+{
+	for(new i = 0;i < MaxClients;i++)
+	{
+		if(IsValidClient(i, false))
+		{
+			tfgo_player_money[i] = GetConVarInt(g_tfgoDefaultMoney);
+			for(int b = 0 ; b < 3 ; b++)
+			{
+				tfgo_clientWeapons[i][b] = -1; // Reset player inventory
+			}
+			for(int b = 1 ; b < TOTALGRENADES+1 ; b++)
+			{
+				tfgo_clientGrenades[i][b] = 0;
+			}
+		}
+	}
+	tfgo_warmupmode = false;
+	PrintToChatAll("[TFGO] Warmup Ended");
 }
 
 public Action:timer_roundactive(Handle:timer)
@@ -429,6 +501,7 @@ public teamplay_round_win(Handle:event, const String:name[], bool:dontBroadcast)
 			}
 		}
 	}
+	tfgo_roundisgoing = false;
 }
 
 ///////////////////////////
@@ -438,6 +511,12 @@ public teamplay_round_win(Handle:event, const String:name[], bool:dontBroadcast)
 public player_spawn(Handle:event, const String:name[], bool:dontBroadcast)
 {
 	new client = GetClientOfUserId(GetEventInt(event, "userid")); // Get client
+	// Don't let them spawn mid-round
+	if(tfgo_roundisgoing)
+	{
+		ForcePlayerSuicide(client);
+		return;
+	}
 	float pos[3];
 	GetEntPropVector(client, Prop_Send, "m_vecOrigin", pos); // Get the client's current pos
 	tfgo_clientSpawnPos[client] = pos; // set it to the global array
@@ -789,26 +868,63 @@ public Action:Command_TFGO_GiveGrenade(client, args)
 /////////////////////////////
 public Action:Command_TFGO_ThrowGrenade(client, args)
 {
+	TFGO_ThrowGrenade(client, GRENADE_FRAG);
+	return Plugin_Handled;
+}
+
+public Action:Command_TFGO_ThrowSmoke(client, args)
+{
+	TFGO_ThrowGrenade(client, GRENADE_SMOKE);
+	return Plugin_Handled;
+}
+
+public Action:Command_TFGO_ThrowMolotov(client, args)
+{
+	tfgo_clientGrenades[client][GRENADE_MOLOTOV] = 1;
+	TFGO_ThrowGrenade(client, GRENADE_MOLOTOV);
+	return Plugin_Handled;
+}
+
+stock TFGO_ThrowGrenade(client, grenadetype)
+{
+	// Invalid grenade type
+	if(grenadetype != GRENADE_FRAG && grenadetype != GRENADE_SMOKE)
+	{
+		PrintToServer("[TFGO] %N tried to throw an invalid grenade type: %i", client, grenadetype);
+		PrintToConsole(client, "[TFGO] Invalid grenade type. Please contact the server owner.");
+	}
+	
+	// Set grenade model
+	new String:model[PLATFORM_MAX_PATH] = MODEL_GRENADE;
+	switch(grenadetype)
+	{
+		case GRENADE_FRAG: model = MODEL_GRENADE;
+		case GRENADE_SMOKE: model = MODEL_GRENADE;
+		case GRENADE_MOLOTOV: model = MODEL_MOLOTOV;
+		default: model = MODEL_GRENADE;
+	}
+	
+	// If the client is valid, ready and can throw a grenade or the spam convar is on
 	if(IsValidClient(client) && IsClientReady(client) && (tfgo_canThrowGrenade[client] || GetConVarBool(g_tfgoGrenadeSpam)))
 	{
 		// If there are too many entities, do not throw the grenade.
 		if (GetMaxEntities() - GetEntityCount() < 200)
 		{
 			PrintToServer("[TFGO] !ERROR! Cannot spawn grenade, too many entities exist. Try reloading the map.");
+			PrintToConsole(client, "[TFGO] Failed to throw grenade: too many edicts");
 			EmitSoundToClient(client, SOUND_FAILED, client, _, _, _, 1.0);
-			return Plugin_Handled;
 		}
 		
 		// Check if player has more than 0 frag grenades
-		if (tfgo_clientGrenades[client][GRENADE_FRAG] > 0)
+		if (tfgo_clientGrenades[client][grenadetype] > 0)
 		{
 			decl Float:pos[3];
-			decl Float:ePos[3];
 			decl Float:angs[3];
 			decl Float:vecs[3];
-			GetClientEyePosition(client, pos);						// Get Eye position of the player
-			GetClientEyeAngles(client, angs);						// Get Eye angles of the player
-			GetAngleVectors(angs, vecs, NULL_VECTOR, NULL_VECTOR);	// Get the angle of the player
+			GetClientEyePosition(client, pos);						// Get the position of the player
+			GetClientEyeAngles(client, angs);						// Get the angles of the player
+			GetAngleVectors(angs, vecs, NULL_VECTOR, NULL_VECTOR);	// Generate angle
+			//PrintToChat(client, "Eye angles: %f %f %f", angs[0], angs[1], angs[2]);
 			
 			// Set throw position to directly in front of player
 			pos[0] += vecs[0] * 32.0;
@@ -817,15 +933,20 @@ public Action:Command_TFGO_ThrowGrenade(client, args)
 			ScaleVector(vecs, GetConVarFloat(g_tfgoGrenadeSpeed));
 			
 			// Create prop entity for the grenade
-			new grenade = CreateEntityByName("prop_physics_override");
+			new grenade;
+			if(grenadetype == GRENADE_MOLOTOV)
+				grenade = CreateEntityByName("prop_physics");
+			else
+				grenade = CreateEntityByName("prop_physics_override");
+			
 			if (IsValidEntity(grenade))
 			{
-				DispatchKeyValue(grenade, "model", MODEL_GRENADE);
+				DispatchKeyValue(grenade, "model", model);
 				DispatchKeyValue(grenade, "solid", "6");
 				SetEntityGravity(grenade, 0.5);
-				SetEntPropFloat(grenade, Prop_Data, "m_flFriction", 0.8);
-				SetEntPropFloat(grenade, Prop_Send, "m_flElasticity", 0.45);
-				SetEntProp(grenade, Prop_Data, "m_CollisionGroup", 1);
+				SetEntPropFloat(grenade, Prop_Data, "m_flFriction", 5.0); // old: 0.8
+				SetEntPropFloat(grenade, Prop_Send, "m_flElasticity", 0.1); // old: 0.45
+				SetEntProp(grenade, Prop_Data, "m_CollisionGroup", 2);
 				SetEntProp(grenade, Prop_Data, "m_usSolidFlags", 0x18);
 				SetEntProp(grenade, Prop_Data, "m_nSolidType", 6); 
 				
@@ -836,11 +957,18 @@ public Action:Command_TFGO_ThrowGrenade(client, args)
 				DispatchSpawn(grenade);
 				TeleportEntity(grenade, pos, NULL_VECTOR, vecs);
 				
-				float delay = GetConVarFloat(g_tfgoGrenadeDelay);
-				CreateTimer(delay, Function_GrenadeExplode, grenade);
+				float idelay = GetConVarFloat(g_tfgoGrenadeDelay);
+				
+				switch(grenadetype)
+				{
+					case GRENADE_FRAG: CreateTimer(idelay, Function_GrenadeExplode, grenade);
+					case GRENADE_SMOKE: CreateTimer(idelay, Function_SmokeExplode, grenade);
+					case GRENADE_MOLOTOV: HookSingleEntityOutput(grenade, "OnBreak", Hook_Molotov, true);
+				}
 			}
 			EmitSoundToAll(SOUND_THROW, client, _, _, _, 1.0);
-			tfgo_clientGrenades[client][GRENADE_FRAG] --;
+			tfgo_clientGrenades[client][grenadetype]--;
+			//CreateTimer(0.1, timer_fragout, client);
 			PlayVoiceCommand(client, "fragout");
 			
 			if(!GetConVarBool(g_tfgoGrenadeSpam))
@@ -852,11 +980,87 @@ public Action:Command_TFGO_ThrowGrenade(client, args)
 		else
 		{
 			EmitSoundToClient(client, SOUND_FAILED, client, _, _, _, 1.0);
-			return Plugin_Handled;
 		}
 	}
-	return Plugin_Handled;
 }
+
+// TO DO
+public Action:Hook_Molotov(const char[] output, int caller, int activator, float delay)
+{
+	int grenade = caller;
+	if(IsValidEntity(grenade))
+	{
+		decl Float:pos[3];
+		GetEntPropVector(grenade, Prop_Data, "m_vecOrigin", pos);
+		PrintToChatAll("WOHOO, %i IS A VALID ENTITY INDEX! AND IT JUST BROKE! position: %f %f %f", grenade, pos[0], pos[1], pos[2]);
+		
+		// ATTENTION
+		
+		// ENV_FIRE IS NOT WORKING IN TF2, APPARENTLY
+		// SO NOTHING WILL FUCKING WORK.
+		
+		new fire = CreateEntityByName("env_fire");
+		
+		if(IsValidEntity(fire))
+		{
+			PrintToChatAll("Fire entity is valid");
+		}
+		
+		int client = GetEntProp(grenade, Prop_Send, "m_hOwnerEntity");
+		SetEntPropEnt(fire, Prop_Send, "m_hOwnerEntity", client);
+		DispatchKeyValue(fire, "firesize", "220");
+		//DispatchKeyValue(fire, "fireattack", "5");
+		DispatchKeyValue(fire, "health", "5");
+		DispatchKeyValue(fire, "firetype", "Normal");
+		
+		DispatchKeyValueFloat(fire, "damagescale", 5.0);
+		DispatchKeyValue(fire, "spawnflags", "256");  //Used to controll flags
+		SetVariantString("WaterSurfaceExplosion");
+		AcceptEntityInput(fire, "DispatchEffect"); 
+		DispatchSpawn(fire);
+		TeleportEntity(fire, pos, NULL_VECTOR, NULL_VECTOR);
+		AcceptEntityInput(fire, "StartFire");
+		EmitAmbientSound( SOUND_EXPLOSION, pos, fire, SNDLEVEL_NORMAL );
+	}
+	else
+	{
+		PrintToChatAll("GOD DAMN INVALID ENTITY: %i FIX IT YOU PRICK!", grenade);
+	}
+}
+
+/*
+
+public Action:timer_fragout(Handle:timer, any:client)
+{
+	PlayVoiceCommand(client, "fragout");
+}
+
+public bool:TraceEntityFilterPlayer(entity, contentsMask)
+{
+	return entity > MaxClients || !entity;
+}
+
+public MolotovTouch(grenade, ent)
+{
+	if(IsValidEntity(grenade))
+	{
+		decl String:strName[50];
+		GetEntPropString(ent, Prop_Data, "m_iName", strName, sizeof(strName));
+		
+		if(StrEqual(strName, "outdoors") || StrEqual(strName, "blutriggerfail") || StrEqual(strName, "indoors")) //  || StrEqual(strName, "")
+		{
+			PrintToChatAll("%i HAS TOUCHED %i, CLASSNAME: %s", grenade, ent, strName);
+		}
+		else
+		{
+			CreateTimer(0.1, Function_GrenadeExplode, grenade);
+			PrintToChatAll("%i HAS TOUCHED %i, CLASSNAME: %s, EXPLODING!!!", grenade, ent, strName);
+			SDKUnhook(grenade, SDKHook_Touch, MolotovTouch);
+		}
+	}
+}
+*/
+// TO DO END
 
 public Action:timer_canThrowGrenade(Handle:timer, any:client)
 {
@@ -868,81 +1072,6 @@ public Action:timer_canTalk(Handle:timer, any:client)
 	tfgo_canTalk[client] = true;
 }
 
-/////////////////////////
-//T H R O W   S M O K E//
-/////////////////////////
-
-public Action:Command_TFGO_ThrowSmoke(client, args)
-{
-	if(IsValidClient(client) && IsClientReady(client) && (tfgo_canThrowGrenade[client] || GetConVarBool(g_tfgoGrenadeSpam)))
-	{
-		// If there are too many entities, do not throw the grenade.
-		if (GetMaxEntities() - GetEntityCount() < 200)
-		{
-			PrintToServer("[TFGO] !ERROR! Cannot spawn grenade, too many entities exist. Try reloading the map.");
-			EmitSoundToClient(client, SOUND_FAILED, client, _, _, _, 1.0);
-			return Plugin_Handled;
-		}
-		
-		// Check if player has more than 0 smoke grenades
-		if (tfgo_clientGrenades[client][GRENADE_SMOKE] > 0)
-		{
-			decl Float:pos[3];
-			decl Float:ePos[3];
-			decl Float:angs[3];
-			decl Float:vecs[3];
-			GetClientEyePosition(client, pos);						// Get Eye position of the player
-			GetClientEyeAngles(client, angs);						// Get Eye angles of the player
-			GetAngleVectors(angs, vecs, NULL_VECTOR, NULL_VECTOR);	// Get the angle of the player
-			
-			// Set throw position to directly in front of player
-			pos[0] += vecs[0] * 32.0;
-			pos[1] += vecs[1] * 32.0;
-			
-			ScaleVector(vecs, GetConVarFloat(g_tfgoGrenadeSpeed));
-			
-			// Create prop entity for the smoke
-			new grenade = CreateEntityByName("prop_physics_override");
-			if (IsValidEntity(grenade))
-			{
-				DispatchKeyValue(grenade, "model", MODEL_GRENADE);
-				DispatchKeyValue(grenade, "solid", "6");
-				SetEntityGravity(grenade, 0.5);
-				SetEntPropFloat(grenade, Prop_Data, "m_flFriction", 0.8);
-				SetEntPropFloat(grenade, Prop_Send, "m_flElasticity", 0.45);
-				SetEntProp(grenade, Prop_Data, "m_CollisionGroup", 1);
-				SetEntProp(grenade, Prop_Data, "m_usSolidFlags", 0x18);
-				SetEntProp(grenade, Prop_Data, "m_nSolidType", 6); 
-				
-				DispatchKeyValue(grenade, "renderfx", "0");
-				DispatchKeyValue(grenade, "rendercolor", "255 255 255");
-				DispatchKeyValue(grenade, "renderamt", "255");					
-				SetEntPropEnt(grenade, Prop_Data, "m_hOwnerEntity", client);
-				DispatchSpawn(grenade);
-				TeleportEntity(grenade, pos, NULL_VECTOR, vecs);
-				
-				float delay = GetConVarFloat(g_tfgoGrenadeDelay);
-				CreateTimer(delay, Function_SmokeExplode, grenade);
-			}
-			EmitSoundToAll(SOUND_THROW, client, _, _, _, 1.0);
-			tfgo_clientGrenades[client][GRENADE_SMOKE] --;
-			PlayVoiceCommand(client, "smokeout");
-			
-			if(!GetConVarBool(g_tfgoGrenadeSpam))
-			{
-				tfgo_canThrowGrenade[client] = false;
-				CreateTimer(GetConVarFloat(g_tfgoGrenadeThrowDelay)+0.1, timer_canThrowGrenade, client);
-			}
-		}
-		else
-		{
-			EmitSoundToClient(client, SOUND_FAILED, client, _, _, _, 1.0);
-			return Plugin_Handled;
-		}
-	}
-	return Plugin_Handled;
-}
-
 /////////////////////////////////
 //S M O K E   E X P L O S I O N//
 /////////////////////////////////
@@ -950,7 +1079,7 @@ public Action:Command_TFGO_ThrowSmoke(client, args)
 public Action:Function_SmokeExplode(Handle:timer, any:grenade)
 {
 	new Float:delay = GetConVarFloat(g_tfgoSmokeTime);
-	new String:SmokeTransparency[32];
+	//new String:SmokeTransparency[32];
 	
 	decl Float:pos[3];
 	GetEntPropVector(grenade, Prop_Data, "m_vecOrigin", pos);
@@ -970,6 +1099,21 @@ public Action:Function_SmokeExplode(Handle:timer, any:grenade)
 		Format(SName, sizeof(SName), "Smoke%i", grenade);
 		DispatchKeyValue(SmokeEnt,"targetname", SName);
 		DispatchKeyValue(SmokeEnt,"Origin", originData);
+		DispatchKeyValue(SmokeEnt,"BaseSpread", "60");
+		DispatchKeyValue(SmokeEnt,"SpreadSpeed", "20");
+		DispatchKeyValue(SmokeEnt,"Speed", "50");
+		DispatchKeyValue(SmokeEnt,"StartSize", "400");
+		DispatchKeyValue(SmokeEnt,"EndSize", "2");
+		DispatchKeyValue(SmokeEnt,"Rate", "30");
+		DispatchKeyValue(SmokeEnt,"JetLength", "200");
+		DispatchKeyValue(SmokeEnt,"Twist", "20"); 
+		DispatchKeyValue(SmokeEnt,"RenderColor", "150 150 150"); //red green blue
+		DispatchKeyValue(SmokeEnt,"RenderAmt", "255");
+		DispatchKeyValue(SmokeEnt,"SmokeMaterial", "particle/particle_smokegrenade1.vmt");
+		
+		/* OLD, LAGGY SMOKE
+		DispatchKeyValue(SmokeEnt,"targetname", SName);
+		DispatchKeyValue(SmokeEnt,"Origin", originData);
 		DispatchKeyValue(SmokeEnt,"BaseSpread", "100");
 		DispatchKeyValue(SmokeEnt,"SpreadSpeed", "20");
 		DispatchKeyValue(SmokeEnt,"Speed", "50");
@@ -981,6 +1125,7 @@ public Action:Function_SmokeExplode(Handle:timer, any:grenade)
 		DispatchKeyValue(SmokeEnt,"RenderColor", "150 150 150"); //red green blue
 		DispatchKeyValue(SmokeEnt,"RenderAmt", "255");
 		DispatchKeyValue(SmokeEnt,"SmokeMaterial", "particle/particle_smokegrenade1.vmt");
+		*/
 		
 		DispatchSpawn(SmokeEnt);
 		AcceptEntityInput(SmokeEnt, "TurnOn");
@@ -1090,7 +1235,7 @@ public Action:Command_TFGO_BuyWeapon(client, args)
 {
 	if(IsValidClient(client, false)) // If client is valid
 	{
-		if (!isPlayerNearSpawn(client) && !GetConVarBool(g_tfgoBuyAnywhere))
+		if (!isPlayerNearSpawn(client) && !GetConVarBool(g_tfgoBuyAnywhere) && !tfgo_warmupmode)
 		{
 			PrintToChat(client, "[TFGO] You're too far away from the buy zone!");
 			return Plugin_Handled;
@@ -1512,7 +1657,7 @@ public Action:Command_TFGO_Admin_SetMoney(client, args)
 /////////////////
 public Action:Command_TFGO_BuyMenu(client, args)
 {
-	if (!isPlayerNearSpawn(client) && !GetConVarBool(g_tfgoBuyAnywhere))
+	if (!isPlayerNearSpawn(client) && !GetConVarBool(g_tfgoBuyAnywhere) && !tfgo_warmupmode)
 	{
 		PrintToChat(client, "[TFGO] You're too far away from the buy zone!");
 		return Plugin_Handled;
@@ -1596,7 +1741,11 @@ Menu BuildBuyMenu_pistols()
 		{
 			char currentid[32];
 			IntToString(i, currentid, sizeof(currentid));
-			menu.AddItem(currentid, tfgo_weapons_name[i]);
+			char buffer[64];
+			int price = tfgo_weapons[i][1];
+			char name[32]; name = tfgo_weapons_name[i];
+			Format(buffer, sizeof(buffer), "($%i) %s", price, name);
+			menu.AddItem(currentid, buffer);
 			currentfound = true;
 		}
 	}
@@ -1623,7 +1772,11 @@ Menu BuildBuyMenu_smgs()
 		{
 			char currentid[32];
 			IntToString(i, currentid, sizeof(currentid));
-			menu.AddItem(currentid, tfgo_weapons_name[i]);
+			char buffer[64];
+			int price = tfgo_weapons[i][1];
+			char name[32]; name = tfgo_weapons_name[i];
+			Format(buffer, sizeof(buffer), "($%i) %s", price, name);
+			menu.AddItem(currentid, buffer);
 			currentfound = true;
 		}
 	}
@@ -1650,7 +1803,11 @@ Menu BuildBuyMenu_rifles()
 		{
 			char currentid[32];
 			IntToString(i, currentid, sizeof(currentid));
-			menu.AddItem(currentid, tfgo_weapons_name[i]);
+			char buffer[64];
+			int price = tfgo_weapons[i][1];
+			char name[32]; name = tfgo_weapons_name[i];
+			Format(buffer, sizeof(buffer), "($%i) %s", price, name);
+			menu.AddItem(currentid, buffer);
 			currentfound = true;
 		}
 	}
@@ -1677,7 +1834,11 @@ Menu BuildBuyMenu_heavy()
 		{
 			char currentid[32];
 			IntToString(i, currentid, sizeof(currentid));
-			menu.AddItem(currentid, tfgo_weapons_name[i]);
+			char buffer[64];
+			int price = tfgo_weapons[i][1];
+			char name[32]; name = tfgo_weapons_name[i];
+			Format(buffer, sizeof(buffer), "($%i) %s", price, name);
+			menu.AddItem(currentid, buffer);
 			currentfound = true;
 		}
 	}
@@ -1694,12 +1855,17 @@ Menu BuildBuyMenu_heavy()
 
 Menu BuildBuyMenu_grenades()
 {
-	bool currentfound = false;
 	Menu menu = new Menu(Menu_BuyMenu_buy);
 	menu.SetTitle("Grenades");
 	
-	menu.AddItem("grenade_frag", "HE Grenade");
-	menu.AddItem("grenade_smoke", "Smoke Grenade");
+	char buffer[64];
+	
+	int price = tfgo_grenades[GRENADE_FRAG][0];
+	Format(buffer, sizeof(buffer), "($%i) HE Grenade", price);
+	menu.AddItem("grenade_frag", buffer);
+	price = tfgo_grenades[GRENADE_SMOKE][0];
+	Format(buffer, sizeof(buffer), "($%i) Smoke Grenade", price);
+	menu.AddItem("grenade_smoke", buffer);
 	
 	menu.ExitBackButton = true;
 	
