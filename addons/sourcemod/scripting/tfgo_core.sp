@@ -10,6 +10,7 @@
 //																								//
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
+#define REQUIRE_EXTENSIONS
 #include <sourcemod>
 #include <tf2>
 #include <tf2_stocks>
@@ -30,6 +31,7 @@
 #define SOUND_SMOKE			"tfgo/sg_explode.wav"
 #define MODEL_GRENADE 		"models/weapons/w_models/w_grenade_frag.mdl"
 #define MODEL_MOLOTOV		"models/props_junk/garbage_glassbottle003a.mdl"
+#define MODEL_C4			"models/weapons/w_suitcase_passenger.mdl"
 
 #define SOUND_BUY			"items/gunpickup2.wav"
 
@@ -128,6 +130,7 @@ int tfgo_radioEnts[MAXPLAYERS+1];						// Radio sprite entities
 bool tfgo_canThrowGrenade[MAXPLAYERS+1];					// Can the player throw a grenade?
 bool tfgo_canTalk[MAXPLAYERS+1];							// Can the player play a voice command?
 bool tfgo_canSwitchClass[MAXPLAYERS+1];					// Can the player switch classes?
+bool player_CanPlant[MAXPLAYERS + 1];					// Can the player plant the bomb?
 
 new g_velocityOffset;
 
@@ -139,6 +142,13 @@ new String:tfgo_weapons_name[256][32];
 new String:tfgo_weapons_logname[256][32];
 int tfgo_weapons[256][4];
 int tfgo_grenades[5][1];
+
+// Plant zones
+new Float:tfgo_plantzones[128][8];							// Plant zones for maps
+new Float:plants_current[8];								// Current map's plantzones
+new String:tfgo_plantzones_str[128][32];					// Plant zone map name
+
+new roundwin1, roundwin2, gamerules, timer_bomb, timer_nobomb;
 
 // Convars
 Handle g_tfgoDefaultMoney;
@@ -169,7 +179,8 @@ Handle hudPlus1;
 Handle hudPlus2;
 
 // Timers
-Handle DashTimerHandle = INVALID_HANDLE;
+//Handle DashTimerHandle = INVALID_HANDLE;
+Handle PlantCheck = INVALID_HANDLE;
 
 // Menus
 Menu BuyMenu = null;
@@ -219,6 +230,7 @@ public OnPluginStart()
 	// A D M I N   C O M M A N D S //
 	RegAdminCmd("sm_setmoney", Command_TFGO_Admin_SetMoney, ADMFLAG_ROOT, "sm_setmoney <amount> [player]");
 	RegAdminCmd("tfgo_reloadweapons", Command_TFGO_ReloadWeapons, ADMFLAG_ROOT, "tfgo_reloadweapons");
+	RegAdminCmd("tfgo_reloadmaps", Command_TFGO_ReloadPlantzones, ADMFLAG_ROOT, "tfgo_reloadmaps");
 	RegAdminCmd("sm_givegrenade", Command_TFGO_GiveGrenade, ADMFLAG_ROOT, "sm_givegrenade <player> <amount>");
 	
 	// C L I E N T   C O M M A N D S //
@@ -232,6 +244,8 @@ public OnPluginStart()
 	RegConsoleCmd("sm_voice1", Command_TFGO_VoiceGroupMenu);
 	RegConsoleCmd("sm_voice2", Command_TFGO_VoiceResponsesMenu);
 	RegConsoleCmd("sm_voice3", Command_TFGO_VoiceCommandMenu);
+	
+	RegConsoleCmd("sm_plant", Command_TFGO_PlantBomb);
 	
 	// H O O K S //
 	HookEvent("player_death", Player_Death);
@@ -251,6 +265,7 @@ public OnPluginStart()
 		tfgo_player_money[i] = GetConVarInt(g_tfgoDefaultMoney);
 		tfgo_canThrowGrenade[i] = true;
 		tfgo_canTalk[i] = true;
+		player_CanPlant[i] = false;
 		for(int b = 0 ; b < 3 ; b++)
 		{
 			tfgo_clientWeapons[i][b] = -1;
@@ -261,8 +276,24 @@ public OnPluginStart()
 		}
 	}
 	
+	for (int i = 0; i < sizeof(tfgo_plantzones); i++)
+	{
+		tfgo_plantzones[i][0] = -1.0; // A Size
+		
+		tfgo_plantzones[i][2] = -1.0; // A X
+		tfgo_plantzones[i][3] = -1.0; // A Y
+		tfgo_plantzones[i][4] = -1.0; // A Z
+		
+		tfgo_plantzones[i][1] = -1.0; // B Size
+		tfgo_plantzones[i][5] = -1.0; // B X
+		tfgo_plantzones[i][6] = -1.0; // B Y
+		tfgo_plantzones[i][7] = -1.0; // B Z
+		
+		tfgo_plantzones_str[i] = "NULL"; // Mapname
+	}
+	
 	// T I M E R S //
-	DashTimerHandle = CreateTimer(0.1, timerJump, _, TIMER_REPEAT);
+	CreateTimer(0.1, timerJump, _, TIMER_REPEAT);
 	
 	// O T H E R //
 	LoadTranslations("common.phrases"); // Load common translation file
@@ -274,6 +305,7 @@ public OnPluginStart()
 	}
 	
 	TFGO_ReloadWeapons();
+	TFGO_ReloadPlantzones();
 	
 	VoiceMenu_VoiceResponses = BuildVoiceResponseMenu();
 	VoiceMenu_VoiceGroup = BuildVoiceGroupMenu();
@@ -405,6 +437,7 @@ public void TF2_OnWaitingForPlayersStart()
 		}
 	}
 	PrintToChatAll("[TFGO] Warmup Started");
+	KillGameplayEnts();
 }
 
 public void TF2_OnWaitingForPlayersEnd()
@@ -425,6 +458,7 @@ public void TF2_OnWaitingForPlayersEnd()
 		}
 	}
 	tfgo_warmupmode = false;
+	KillGameplayEnts();
 	PrintToChatAll("[TFGO] Warmup Ended");
 }
 
@@ -1342,6 +1376,374 @@ public Action:Command_TFGO_BuyWeapon(client, args)
 	}
 }
 
+/////////////////////////////////////
+//R E L O A D   P L A N T Z O N E S//
+/////////////////////////////////////
+public Action:Command_TFGO_ReloadPlantzones(client, args)
+{
+	TFGO_ReloadPlantzones();
+	return Plugin_Handled;
+}
+
+public TFGO_ReloadPlantzones()
+{
+	for (int i = 0; i < sizeof(tfgo_plantzones); i++)
+	{
+		tfgo_plantzones[i][0] = -1.0; // A Size
+		
+		tfgo_plantzones[i][2] = -1.0; // A X
+		tfgo_plantzones[i][3] = -1.0; // A Y
+		tfgo_plantzones[i][4] = -1.0; // A Z
+		
+		tfgo_plantzones[i][1] = -1.0; // B Size
+		tfgo_plantzones[i][5] = -1.0; // B X
+		tfgo_plantzones[i][6] = -1.0; // B Y
+		tfgo_plantzones[i][7] = -1.0; // B Z
+		
+		tfgo_plantzones_str[i] = "NULL"; // Mapname
+	}
+	// load config file
+	decl String:config[PLATFORM_MAX_PATH];
+	BuildPath(Path_SM, config, PLATFORM_MAX_PATH, "configs/tfgo_plants.cfg");  
+	
+	new Handle:kv = KvizCreateFromFile("plantzones", config);
+	
+	new count = 0;
+	
+	// Maps
+	for (new i = 1; KvizExists(kv, ":nth-child(%i)", i); i++) {
+		decl String:map[32], Float:x1, Float:y1, Float:z1, Float:x2, Float:y2, Float:z2, Float:size1, Float:size2;
+		bool error = false;
+		if (!KvizGetStringExact(kv, map, sizeof(map), ":nth-child(%i):key", i)) { error = true; map = "NOTSET"; }
+		if(!KvizGetFloatExact(kv, size1, ":nth-child(%i).a.size", i)) size1=500.0;
+		if(!KvizGetFloatExact(kv, x1, ":nth-child(%i).a.x", i)) error=true;
+		if(!KvizGetFloatExact(kv, y1, ":nth-child(%i).a.y", i)) error=true;
+		if(!KvizGetFloatExact(kv, z1, ":nth-child(%i).a.z", i)) error=true;
+		if(!KvizGetFloatExact(kv, size2, ":nth-child(%i).b.size", i)) size2=500.0;
+		if(!KvizGetFloatExact(kv, x2, ":nth-child(%i).b.x", i)) error=true;
+		if(!KvizGetFloatExact(kv, y2, ":nth-child(%i).b.y", i)) error=true;
+		if(!KvizGetFloatExact(kv, z2, ":nth-child(%i).b.z", i)) error=true;
+		
+		if(!error)
+		{
+			tfgo_plantzones[count][0] = size1;
+			tfgo_plantzones[count][1] = size2;
+			tfgo_plantzones[count][2] = x1;
+			tfgo_plantzones[count][3] = y1;
+			tfgo_plantzones[count][4] = z1;
+			tfgo_plantzones[count][5] = x2;
+			tfgo_plantzones[count][6] = y2;
+			tfgo_plantzones[count][7] = z2;
+			tfgo_plantzones_str[count] = map;
+			
+			count++;
+			PrintToServer("[TFGO] Map %s successfully set up", map);
+		}
+		else
+		{
+			PrintToServer("[TFGO] BUMPED INTO AN ERROR IN MAP CONFIG FILE (AT: %s), MAKE SURE THAT IT IS CORRECTLY MADE!", map);
+		}
+	}
+	
+	TFGO_OnMapConfigLoaded();
+	
+	KvizClose(kv);
+}
+
+// Below will be called when the map config successfully loads.
+public TFGO_OnMapConfigLoaded()
+{
+	if(PlantCheck != INVALID_HANDLE)
+		KillTimer(PlantCheck);
+	char map[64];
+	bool found = false;
+	GetCurrentMap(map, sizeof(map));
+	PrintToChatAll("current map: %s", map);
+	
+	for (int i = 0; i < sizeof(tfgo_plantzones_str); i++)
+	{
+		if(StrEqual(tfgo_plantzones_str[i], map))
+		{
+			for (int b = 0; b < 8; b++)
+			{
+				plants_current[b] = tfgo_plantzones[i][b];
+			}
+			found = true;
+		}
+	}
+	if(found)
+	{
+		// Create a timer for checking the plant
+		PlantCheck = CreateTimer(0.1, TFGO_PlantCheck, _, TIMER_REPEAT);
+		if(PlantCheck != INVALID_HANDLE)
+		{
+			PrintToServer("[TFGO] Found the current map, timer created");
+			KillGameplayEnts();
+		}
+		else
+			PrintToServer("[TFGO] Found the current map, but the timer could not be created.");
+	}
+	else
+	{
+		PrintToServer("[TFGO] No plant zone config found for the current map (%s), ignoring.", map);
+	}
+}
+
+// Kills all gameplay changing entities.
+public KillGameplayEnts()
+{
+	new String:ents[17][32];
+	ents[0] = "point_template";
+	ents[1] = "game_round_win";
+	ents[2] = "team_round_timer";
+	ents[3] = "team_control_point_master";
+	ents[4] = "team_control_point";
+	ents[5] = "game_text_tf";
+	ents[6] = "logic_auto";
+	ents[7] = "point_servercommand";
+	ents[8] = "func_capturezone";
+	ents[9] = "item_teamflag";
+	ents[10] = "item_ammopack_small";
+	ents[11] = "item_ammopack_medium";
+	ents[11] = "item_ammopack_full";
+	ents[12] = "item_healthkit_small";
+	ents[13] = "item_healthkit_medium";
+	ents[14] = "item_healthkit_full";
+	ents[15] = "trigger_capture_area";
+	ents[16] = "prop_dynamic";
+	
+	 
+	char cls[32];
+	char mn[PLATFORM_MAX_PATH];
+	int checked = 0;
+	int deleted = 0;
+	for(int i = 0; i <= GetMaxEntities() ; i++)
+	{
+		if(!IsValidEntity(i))
+			continue;
+		
+		GetEntityClassname(i, cls, sizeof(cls));
+		
+		for (int b = 0; b < sizeof(ents); b++)
+		{
+			checked++;
+			if(StrEqual(cls, ents[b], false))
+			{
+				if(StrEqual(cls, "prop_dynamic", false))
+				{
+					GetEntPropString(i, Prop_Data, "m_ModelName", mn, sizeof(mn));
+					if(StrEqual(mn, "models/props_doomsday/cap_point_small.mdl", false))
+					{
+						deleted++;
+						RemoveEdict(i);
+						PrintToChatAll("Deleted edict: %s", cls);
+					}
+				}
+				else
+				{
+					deleted++;
+					RemoveEdict(i);
+					PrintToChatAll("Deleted edict: %s", cls);
+				}
+			}
+		}
+	}
+	PrintToChatAll("Checked: %i, deleted: %i", checked, deleted);
+	PrintToChatAll("Creating map timer, gamerules and winround entities");
+	
+	roundwin1 = CreateEntityByName("game_round_win");
+	
+	if (IsValidEntity(roundwin1))
+	{
+		DispatchKeyValue(roundwin1, "force_map_reset", "1");
+		DispatchKeyValue(roundwin1, "targetname", "win_blue");
+		DispatchKeyValue(roundwin1, "TeamNum", "3");
+		DispatchSpawn(roundwin1);
+		PrintToChatAll("Created blue win entity");
+	}
+	else
+	{
+		PrintToChatAll("Failed to create blue win entity");
+	}
+	
+	roundwin2 = CreateEntityByName("game_round_win");
+	
+	if (IsValidEntity(roundwin2))
+	{
+		DispatchKeyValue(roundwin2, "force_map_reset", "1");
+		DispatchKeyValue(roundwin2, "targetname", "win_red");
+		DispatchKeyValue(roundwin2, "TeamNum", "2");
+		DispatchSpawn(roundwin2);
+		PrintToChatAll("Created red win entity");
+	}
+	else
+	{
+		PrintToChatAll("Failed to create red win entity");
+	}
+	
+	gamerules = CreateEntityByName("tf_gamerules");
+	
+	if (IsValidEntity(gamerules))
+	{
+		DispatchKeyValue(gamerules, "ctf_overtime", "0");
+		DispatchKeyValue(gamerules, "hud_type", "0");
+		DispatchKeyValue(gamerules, "targetname", "tf_gamerules");
+		DispatchSpawn(gamerules);
+		PrintToChatAll("Created gamerule entity");
+	}
+	else
+	{
+		PrintToChatAll("Failed to create gamerule entity");
+	}
+	
+	timer_bomb = CreateEntityByName("team_round_timer");
+	
+	if (IsValidEntity(timer_bomb))
+	{
+		DispatchKeyValue(timer_bomb, "targetname", "timer_bomb");
+		DispatchKeyValue(timer_bomb, "StartDisabled", "1");
+		DispatchKeyValue(timer_bomb, "start_paused", "0");
+		DispatchKeyValue(timer_bomb, "show_time_remaining", "1");
+		DispatchKeyValue(timer_bomb, "show_in_hud", "0");
+		DispatchKeyValue(timer_bomb, "reset_time", "0");
+		DispatchKeyValue(timer_bomb, "max_length", "45");
+		DispatchKeyValue(timer_bomb, "auto_countdown", "1");
+		DispatchKeyValue(timer_bomb, "timer_length", "45");
+		DispatchKeyValue(timer_bomb, "setup_length", "0");
+		DispatchSpawn(timer_bomb);
+		PrintToChatAll("Created bomb timer entity");
+	}
+	else
+	{
+		PrintToChatAll("Failed to create bomb timer entity");
+	}
+	
+	timer_nobomb = CreateEntityByName("team_round_timer");
+	
+	if (IsValidEntity(timer_nobomb))
+	{
+		DispatchKeyValue(timer_nobomb, "targetname", "timer_nobomb");
+		DispatchKeyValue(timer_nobomb, "StartDisabled", "0");
+		DispatchKeyValue(timer_nobomb, "start_paused", "0");
+		DispatchKeyValue(timer_nobomb, "show_time_remaining", "1");
+		DispatchKeyValue(timer_nobomb, "show_in_hud", "1");
+		DispatchKeyValue(timer_nobomb, "reset_time", "1");
+		DispatchKeyValue(timer_nobomb, "max_length", "121");
+		DispatchKeyValue(timer_nobomb, "auto_countdown", "1");
+		DispatchKeyValue(timer_nobomb, "timer_length", "121");
+		DispatchKeyValue(timer_nobomb, "setup_length", "10");
+		DispatchSpawn(timer_nobomb);
+		HookSingleEntityOutput(timer_nobomb, "OnFinished", Hook_Timeout_nobomb, true);
+		PrintToChatAll("Created nobomb timer entity");
+		AcceptEntityInput(timer_nobomb, "Enable");
+	}
+	else
+	{
+		PrintToChatAll("Failed to create nobomb timer entity");
+	}
+	
+	//AcceptEntityInput(roundwin1, "RoundWin");
+}
+
+public Action:Hook_Timeout_nobomb(const char[] output, int caller, int activator, float delay)
+{
+	TFGO_CTWin();
+}
+
+public TFGO_CTWin()
+{
+	if(IsValidEntity(roundwin1))
+	{
+		AcceptEntityInput(roundwin1, "RoundWin");
+	}
+}
+
+public Action:TFGO_PlantCheck(Handle:timer)
+{
+	for (int i = 1; i < MaxClients; i++)
+	{
+		if(IsValidClient(i))
+		{
+			new Float:pos[3];
+			new Float:aPos[3];
+			new Float:bPos[3];
+			aPos[0] = plants_current[2];
+			aPos[1] = plants_current[3];
+			aPos[2] = plants_current[4];
+			bPos[0] = plants_current[5];
+			bPos[1] = plants_current[6];
+			bPos[2] = plants_current[7];
+			
+			new Float:sizeA = plants_current[0];
+			new Float:sizeB = plants_current[1];
+			GetClientEyePosition(i, pos);
+			if(GetVectorDistance(pos, aPos) < sizeA)
+			{
+				if(GetEntityFlags(i) & FL_ONGROUND )
+				{
+					// Player is at A, and they're on the ground, ready to plant
+					if(!player_CanPlant[i]) player_CanPlant[i] = true;
+				}
+				else
+				{
+					// Player is at A, but not standing on the ground.
+					if(player_CanPlant[i]) player_CanPlant[i] = false;
+				}
+			}
+			else if(GetVectorDistance(pos, bPos) < sizeB)
+			{
+				if(GetEntityFlags(i) & FL_ONGROUND )
+				{
+					// Player is at B, and they're on the ground, ready to plant
+					if(!player_CanPlant[i]) player_CanPlant[i] = true;
+				}
+				else
+				{
+					// Player is at B, but not standing on the ground.
+					if(player_CanPlant[i]) player_CanPlant[i] = false;
+				}
+			}
+			else
+			{
+				if(player_CanPlant[i]) player_CanPlant[i] = false;
+			}
+		}
+	}
+}
+
+///////////////////////
+//P L A N T   B O M B//
+///////////////////////
+public Action:Command_TFGO_PlantBomb(client, args)
+{
+	if(player_CanPlant[client])
+	{
+		PrintToChat(client, "attempting to plant");
+		new Float:pos[3];
+		GetClientEyePosition(client, pos);
+		pos[2] -= 30.0;
+		
+		new bomb;
+		bomb = CreateEntityByName("prop_dynamic");
+		
+		if (IsValidEntity(bomb))
+		{
+			DispatchKeyValue(bomb, "model", MODEL_C4);
+			DispatchKeyValue(bomb, "solid", "6");
+			SetEntProp(bomb, Prop_Data, "m_CollisionGroup", 2);
+			SetEntProp(bomb, Prop_Data, "m_usSolidFlags", 0x18);
+			SetEntProp(bomb, Prop_Data, "m_nSolidType", 6); 
+			
+			DispatchKeyValue(bomb, "renderfx", "0");
+			DispatchKeyValue(bomb, "rendercolor", "255 255 255");
+			DispatchKeyValue(bomb, "renderamt", "255");					
+			//SetEntPropEnt(bomb, Prop_Data, "m_hOwnerEntity", client);
+			DispatchSpawn(bomb);
+			TeleportEntity(bomb, pos, NULL_VECTOR, NULL_VECTOR);
+		}
+	}
+}
+
 ///////////////////////////////
 //R E L O A D   W E A P O N S//
 ///////////////////////////////
@@ -1856,7 +2258,7 @@ Menu BuildBuyMenu_heavy()
 Menu BuildBuyMenu_grenades()
 {
 	Menu menu = new Menu(Menu_BuyMenu_buy);
-	menu.SetTitle("Grenades");
+	menu.SetTitle("Gear");
 	
 	char buffer[64];
 	
@@ -1894,47 +2296,53 @@ public int Menu_BuyMenu_buy(Menu menu, MenuAction action, int param1, int param2
 		
 		if(StrEqual(info, "grenade_frag"))
 		{
-			if(tfgo_clientGrenades[param1][GRENADE_FRAG] > 0)
+			if(tfgo_canClientBuy[param1])
 			{
-				PrintToChat(param1, "[TFGO] You can't carry any more!");
-			}
-			else
-			{
-				if(tfgo_player_money[param1] >= tfgo_grenades[GRENADE_FRAG][0])
+				if(tfgo_clientGrenades[param1][GRENADE_FRAG] > 0)
 				{
-					tfgo_clientGrenades[param1][GRENADE_FRAG]++;
-					tfgo_player_money[param1] -= tfgo_grenades[GRENADE_FRAG][0];
-					EmitSoundToAll(SOUND_BUY, param1, _, _, _, 1.0);
-					PrintToChat(param1, "[TFGO] Bought HE Grenade for $%i", tfgo_grenades[GRENADE_FRAG][0]);
-					SetHudTextParams(0.14, 0.93, 2.0, 255, 200, 100, 150, 1);
-					ShowSyncHudText(param1, hudPlus1, "-$%i", tfgo_grenades[GRENADE_FRAG][0]);
+					PrintToChat(param1, "[TFGO] You can't carry any more!");
 				}
 				else
 				{
-					PrintToChat(param1, "[TFGO] Not enough money! Price: $%i", tfgo_grenades[GRENADE_FRAG][0]);
+					if(tfgo_player_money[param1] >= tfgo_grenades[GRENADE_FRAG][0])
+					{
+						tfgo_clientGrenades[param1][GRENADE_FRAG]++;
+						tfgo_player_money[param1] -= tfgo_grenades[GRENADE_FRAG][0];
+						EmitSoundToAll(SOUND_BUY, param1, _, _, _, 1.0);
+						PrintToChat(param1, "[TFGO] Bought HE Grenade for $%i", tfgo_grenades[GRENADE_FRAG][0]);
+						SetHudTextParams(0.14, 0.93, 2.0, 255, 200, 100, 150, 1);
+						ShowSyncHudText(param1, hudPlus1, "-$%i", tfgo_grenades[GRENADE_FRAG][0]);
+					}
+					else
+					{
+						PrintToChat(param1, "[TFGO] Not enough money! Price: $%i", tfgo_grenades[GRENADE_FRAG][0]);
+					}
 				}
 			}
 		}
 		else if(StrEqual(info, "grenade_smoke"))
 		{
-			if(tfgo_clientGrenades[param1][GRENADE_SMOKE] > 0)
+			if(tfgo_canClientBuy[param1])
 			{
-				PrintToChat(param1, "[TFGO] You can't carry any more!");
-			}
-			else
-			{
-				if(tfgo_player_money[param1] >= tfgo_grenades[GRENADE_SMOKE][0])
+				if(tfgo_clientGrenades[param1][GRENADE_SMOKE] > 0)
 				{
-					tfgo_clientGrenades[param1][GRENADE_SMOKE]++;
-					tfgo_player_money[param1] -= tfgo_grenades[GRENADE_SMOKE][0];
-					EmitSoundToAll(SOUND_BUY, param1, _, _, _, 1.0);
-					PrintToChat(param1, "[TFGO] Bought Smoke Grenade for $%i", tfgo_grenades[GRENADE_SMOKE][0]);
-					SetHudTextParams(0.14, 0.93, 2.0, 255, 200, 100, 150, 1);
-					ShowSyncHudText(param1, hudPlus1, "-$%i", tfgo_grenades[GRENADE_SMOKE][0]);
+					PrintToChat(param1, "[TFGO] You can't carry any more!");
 				}
 				else
 				{
-					PrintToChat(param1, "[TFGO] Not enough money! Price: $%i", tfgo_grenades[GRENADE_SMOKE][0]);
+					if(tfgo_player_money[param1] >= tfgo_grenades[GRENADE_SMOKE][0])
+					{
+						tfgo_clientGrenades[param1][GRENADE_SMOKE]++;
+						tfgo_player_money[param1] -= tfgo_grenades[GRENADE_SMOKE][0];
+						EmitSoundToAll(SOUND_BUY, param1, _, _, _, 1.0);
+						PrintToChat(param1, "[TFGO] Bought Smoke Grenade for $%i", tfgo_grenades[GRENADE_SMOKE][0]);
+						SetHudTextParams(0.14, 0.93, 2.0, 255, 200, 100, 150, 1);
+						ShowSyncHudText(param1, hudPlus1, "-$%i", tfgo_grenades[GRENADE_SMOKE][0]);
+					}
+					else
+					{
+						PrintToChat(param1, "[TFGO] Not enough money! Price: $%i", tfgo_grenades[GRENADE_SMOKE][0]);
+					}
 				}
 			}
 		}
