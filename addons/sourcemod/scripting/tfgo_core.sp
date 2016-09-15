@@ -137,6 +137,10 @@ new g_velocityOffset;
 bool tfgo_warmupmode = false;
 bool tfgo_roundisgoing = false;
 
+bool tfgo_bombplanted = false;
+
+new Float:bombpos[3];
+
 // Weapons
 new String:tfgo_weapons_name[256][32];
 new String:tfgo_weapons_logname[256][32];
@@ -232,6 +236,7 @@ public OnPluginStart()
 	RegAdminCmd("tfgo_reloadweapons", Command_TFGO_ReloadWeapons, ADMFLAG_ROOT, "tfgo_reloadweapons");
 	RegAdminCmd("tfgo_reloadmaps", Command_TFGO_ReloadPlantzones, ADMFLAG_ROOT, "tfgo_reloadmaps");
 	RegAdminCmd("sm_givegrenade", Command_TFGO_GiveGrenade, ADMFLAG_ROOT, "sm_givegrenade <player> <amount>");
+	RegAdminCmd("sm_forcewin", Command_TFGO_ForceWin, ADMFLAG_ROOT, "sm_forcewin <team>");
 	
 	// C L I E N T   C O M M A N D S //
 	RegConsoleCmd("sm_buy", Command_TFGO_BuyWeapon, "sm_buy <weaponID>");
@@ -1656,10 +1661,56 @@ public TFGO_CTWin()
 	{
 		AcceptEntityInput(roundwin1, "RoundWin");
 	}
+	else
+	{
+		PrintToServer("[TFGO] ERROR Tried to call CT Round win, but the win entity doesn't exist");
+	}
+}
+
+public TFGO_TWin()
+{
+	if(IsValidEntity(roundwin2))
+	{
+		AcceptEntityInput(roundwin2, "RoundWin");
+	}
+	else
+	{
+		PrintToServer("[TFGO] ERROR Tried to call T Round win, but the win entity doesn't exist");
+	}
+}
+
+public Action:Command_TFGO_ForceWin(client, args)
+{
+	char arg[16];
+	GetCmdArg(1, arg, sizeof(arg));
+	if(StrEqual(arg, "ct"))
+	{
+		if(IsValidEntity(roundwin1))
+		{
+			AcceptEntityInput(roundwin1, "RoundWin");
+			ReplyToCommand(client, "[TFGO] Successfully forced team %s to win",  arg);
+		}
+	}
+	else if(StrEqual(arg, "t"))
+	{
+		if(IsValidEntity(roundwin2))
+		{
+			AcceptEntityInput(roundwin2, "RoundWin");
+			ReplyToCommand(client, "[TFGO] Successfully forced team %s to win",  arg);
+		}
+	}
+	else
+	{
+		ReplyToCommand(client, "[TFGO] Invalid team: %s", arg);
+	}
+	return Plugin_Handled;
 }
 
 public Action:TFGO_PlantCheck(Handle:timer)
 {
+	if(tfgo_bombplanted)
+		KillTimer(timer);
+	
 	for (int i = 1; i < MaxClients; i++)
 	{
 		if(IsValidClient(i))
@@ -1716,7 +1767,7 @@ public Action:TFGO_PlantCheck(Handle:timer)
 ///////////////////////
 public Action:Command_TFGO_PlantBomb(client, args)
 {
-	if(player_CanPlant[client])
+	if(player_CanPlant[client] && !tfgo_bombplanted)
 	{
 		PrintToChat(client, "attempting to plant");
 		new Float:pos[3];
@@ -1740,8 +1791,11 @@ public Action:Command_TFGO_PlantBomb(client, args)
 			//SetEntPropEnt(bomb, Prop_Data, "m_hOwnerEntity", client);
 			DispatchSpawn(bomb);
 			TeleportEntity(bomb, pos, NULL_VECTOR, NULL_VECTOR);
+			GetEntPropVector(bomb, Prop_Send, "m_vecOrigin", bombpos);
+			tfgo_bombplanted = true;
 		}
 	}
+	return Plugin_Handled;
 }
 
 ///////////////////////////////
