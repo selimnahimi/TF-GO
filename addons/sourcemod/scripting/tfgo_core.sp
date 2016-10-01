@@ -20,20 +20,22 @@
 #include <tf2items_giveweapon>
 #undef REQUIRE_EXTENSIONS
 #include <SteamWorks>
+#include <multicolors>
 
 #pragma semicolon 1
 
-#define PLUGIN_VERSION 		"1.0.0"
+#define PLUGIN_VERSION 			"1.6.0"
 
-#define SOUND_THROW 		"weapons/grenade_throw.wav"
-#define SOUND_FAILED 		"common/wpn_denyselect.wav"
-#define SOUND_EXPLOSION		"weapons/tacky_grenadier_explode3.wav"
-#define SOUND_SMOKE			"tfgo/sg_explode.wav"
-#define MODEL_GRENADE 		"models/weapons/w_models/w_grenade_frag.mdl"
-#define MODEL_MOLOTOV		"models/props_junk/garbage_glassbottle003a.mdl"
-#define MODEL_C4			"models/weapons/w_suitcase_passenger.mdl"
+#define SOUND_THROW 			"weapons/grenade_throw.wav"
+#define SOUND_FAILED 			"common/wpn_denyselect.wav"
+#define SOUND_EXPLOSION			"weapons/tacky_grenadier_explode3.wav"
+#define SOUND_SMOKE				"tfgo/sg_explode.wav"
+#define MODEL_GRENADE 			"models/weapons/w_models/w_grenade_frag.mdl"
+#define MODEL_MOLOTOV			"models/props_junk/garbage_glassbottle003a.mdl"
+#define MODEL_C4				"models/weapons/w_suitcase_passenger.mdl"
 
-#define SOUND_BUY			"items/gunpickup2.wav"
+#define SOUND_BUY				"items/gunpickup2.wav"
+#define SOUND_BOMBTICK			"ui/hitsound_electro1.wav"
 
 #define SOUND_COMMAND_BLOW		"tfgo/radio/blow.wav"
 #define SOUND_COMMAND_CLEAR		"tfgo/radio/clear.wav"
@@ -61,6 +63,9 @@
 #define SOUND_COMMAND_STICKTOG	"tfgo/radio/sticktog.wav"
 #define SOUND_COMMAND_STORM		"tfgo/radio/stormfront.wav"
 #define SOUND_COMMAND_TAKEPOINT	"tfgo/radio/takepoint.wav"
+
+#define SOUND_COMMAND_PLANTED	"tfgo/radio/bombpl.wav"
+#define SOUND_COMMAND_DEFUSED	"tfgo/radio/bombdef.wav"
 
 #define SPRITE_RADIO_VMT		"materials/tfgo/radio_icon.vmt"
 #define SPRITE_RADIO_VTF		"materials/tfgo/radio_icon.vtf"
@@ -93,7 +98,7 @@ public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max) 
 {
 	if(GetEngineVersion() != Engine_TF2) // If game isn't TF2
 	{
-		Format(error, err_max, "This plugin only works for Team Fortress 2"); // Error
+		Format(error, err_max, "TF:GO only works for Team Fortress 2, duh"); // Error
 		return APLRes_Failure; // Don't load the plugin
 	}
 	return APLRes_Success; // Load the plugin
@@ -122,7 +127,7 @@ public void OnAllPluginsLoaded()
 // Client Arrays
 int tfgo_player_money[MAXPLAYERS + 1]; 					// Each player's current money
 Handle tfgo_MoneyHUD[MAXPLAYERS + 1]; 					// Each player's HUD timer
-int tfgo_clientWeapons[MAXPLAYERS+1][6]; 				// Bought weapons, by ID, 4th value is the type of the grenade, 5th is the amount of grenades.
+int tfgo_clientWeapons[MAXPLAYERS+1][6]; 				// Bought weapons, by ID
 int tfgo_clientGrenades[MAXPLAYERS+1][TOTALGRENADES+1];	// Amount of grenades of every client
 float tfgo_clientSpawnPos[MAXPLAYERS+1][3]; 				// Save the position where a specific player spawned at to check buyzone distance.
 bool tfgo_canClientBuy[MAXPLAYERS+1];					// Is the player in the bounds of the buytime?
@@ -130,7 +135,12 @@ int tfgo_radioEnts[MAXPLAYERS+1];						// Radio sprite entities
 bool tfgo_canThrowGrenade[MAXPLAYERS+1];					// Can the player throw a grenade?
 bool tfgo_canTalk[MAXPLAYERS+1];							// Can the player play a voice command?
 bool tfgo_canSwitchClass[MAXPLAYERS+1];					// Can the player switch classes?
-bool player_CanPlant[MAXPLAYERS + 1];					// Can the player plant the bomb?
+//bool player_CanPlant[MAXPLAYERS + 1];					// Can the player plant the bomb?
+bool bomber_canplant = false;
+int bomber;
+
+int notifycount;
+new String:notifications[2][128];
 
 new g_velocityOffset;
 
@@ -140,6 +150,16 @@ bool tfgo_roundisgoing = false;
 bool tfgo_bombplanted = false;
 
 new Float:bombpos[3];
+int bombtime;
+
+int defuser;
+float defuse_amount;
+
+int bomb;
+int bomb_explosion;
+int bomb_dropped;
+
+bool freeze;
 
 // Weapons
 new String:tfgo_weapons_name[256][32];
@@ -177,6 +197,9 @@ Handle g_tfgoGrenadeSpam;
 Handle g_tfgoGrenadeThrowDelay;
 Handle g_tfgoBuyAnywhere;
 
+Handle g_tfgoChatNotify;
+Handle g_tfgoNotifyDelay;
+
 // HUD elements
 Handle hudMoney;
 Handle hudPlus1;
@@ -184,7 +207,10 @@ Handle hudPlus2;
 
 // Timers
 //Handle DashTimerHandle = INVALID_HANDLE;
-Handle PlantCheck = INVALID_HANDLE;
+//Handle PlantCheck = INVALID_HANDLE;
+Handle notifytimer = INVALID_HANDLE;
+Handle DefuseCheck = INVALID_HANDLE;
+Handle disallowspawn = INVALID_HANDLE;
 
 // Menus
 Menu BuyMenu = null;
@@ -208,6 +234,12 @@ public OnPluginStart()
 {
 	Precache();
 	
+	char buffer[128];
+	notifications[0] = 		"To open the command menu, type \x05!commands\x01!";
+	Format(buffer, sizeof(buffer), "This server is running \x04TF:GO Version %s\x01 by \x05HUNcamper\x01", PLUGIN_VERSION);
+	notifications[1] = 		buffer;
+	
+	
 	// C O N V A R S //
 	g_tfgoDefaultMoney = CreateConVar("tfgo_defaultmoney", "800", "Default amount of money a player recieves on start");
 	g_tfgoMaxMoney = CreateConVar("tfgo_maxmoney", "16000", "Maximum money a player can reach in total");
@@ -230,6 +262,10 @@ public OnPluginStart()
 	g_tfgoSmokeTime = CreateConVar("tfgo_grenade_smoke_time", "10.0", "Smoke grenade's lifetime, in seconds");
 	g_tfgoGrenadeSpam = CreateConVar("tfgo_grenade_spam", "0", "0: delay between grenade throws, 1: no delay");
 	g_tfgoGrenadeThrowDelay = CreateConVar("tfgo_grenade_cooldown", "2.0", "Time in seconds between 2 grenade throws, if spam is disabled");
+	g_tfgoChatNotify = CreateConVar("tfgo_chat_notify", "1", "Enable/Disable chat notifications");
+	g_tfgoNotifyDelay = CreateConVar("tfgo_notify_delay", "30.0", "Time in seconds between 2 chat notifications");
+	
+	HookConVarChange(g_tfgoNotifyDelay, convarchange_notifydelay);
 	
 	// A D M I N   C O M M A N D S //
 	RegAdminCmd("sm_setmoney", Command_TFGO_Admin_SetMoney, ADMFLAG_ROOT, "sm_setmoney <amount> [player]");
@@ -237,6 +273,7 @@ public OnPluginStart()
 	RegAdminCmd("tfgo_reloadmaps", Command_TFGO_ReloadPlantzones, ADMFLAG_ROOT, "tfgo_reloadmaps");
 	RegAdminCmd("sm_givegrenade", Command_TFGO_GiveGrenade, ADMFLAG_ROOT, "sm_givegrenade <player> <amount>");
 	RegAdminCmd("sm_forcewin", Command_TFGO_ForceWin, ADMFLAG_ROOT, "sm_forcewin <team>");
+	RegAdminCmd("sm_forceplant", Command_TFGO_Admin_ForcePlant, ADMFLAG_ROOT, "sm_forceplant <player>");
 	
 	// C L I E N T   C O M M A N D S //
 	RegConsoleCmd("sm_buy", Command_TFGO_BuyWeapon, "sm_buy <weaponID>");
@@ -251,6 +288,7 @@ public OnPluginStart()
 	RegConsoleCmd("sm_voice3", Command_TFGO_VoiceCommandMenu);
 	
 	RegConsoleCmd("sm_plant", Command_TFGO_PlantBomb);
+	RegConsoleCmd("sm_dropbomb", Command_TFGO_DropBomb);
 	
 	// H O O K S //
 	HookEvent("player_death", Player_Death);
@@ -259,18 +297,19 @@ public OnPluginStart()
 	HookEvent("teamplay_round_win", teamplay_round_win);
 	HookEvent("teamplay_round_active", teamplay_round_active);
 	HookEvent("player_changeclass", player_changeclass, EventHookMode_Pre);
+	HookEvent("teamplay_round_start", teamplay_round_start);
 	
 	// H U D   E L E M E N T S //
 	hudMoney = CreateHudSynchronizer();
 	hudPlus1 = CreateHudSynchronizer();
 	hudPlus2 = CreateHudSynchronizer();
+	bomber_canplant = false;
 	
 	for(int i = 1; i <= MaxClients; i++)
 	{
 		tfgo_player_money[i] = GetConVarInt(g_tfgoDefaultMoney);
 		tfgo_canThrowGrenade[i] = true;
 		tfgo_canTalk[i] = true;
-		player_CanPlant[i] = false;
 		for(int b = 0 ; b < 3 ; b++)
 		{
 			tfgo_clientWeapons[i][b] = -1;
@@ -298,7 +337,7 @@ public OnPluginStart()
 	}
 	
 	// T I M E R S //
-	CreateTimer(0.1, timerJump, _, TIMER_REPEAT);
+	//
 	
 	// O T H E R //
 	LoadTranslations("common.phrases"); // Load common translation file
@@ -310,7 +349,7 @@ public OnPluginStart()
 	}
 	
 	TFGO_ReloadWeapons();
-	TFGO_ReloadPlantzones();
+	//TFGO_ReloadPlantzones();
 	
 	VoiceMenu_VoiceResponses = BuildVoiceResponseMenu();
 	VoiceMenu_VoiceGroup = BuildVoiceGroupMenu();
@@ -318,6 +357,24 @@ public OnPluginStart()
 	
 	// Auto config
 	AutoExecConfig(true, "tfgo_config");
+	
+	tfgo_warmupmode = false;
+	tfgo_roundisgoing = false;
+	
+	bomber = 1;
+	bomb = -999999;
+	bomb_explosion = -999999;
+	bomb_dropped = -999999;
+	freeze = false;
+}
+
+public convarchange_notifydelay(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+	PrintToChatAll("Convar changed");
+	if(notifytimer != INVALID_HANDLE)
+		notifytimer = INVALID_HANDLE;
+		
+	notifytimer = CreateTimer(GetConVarFloat(g_tfgoNotifyDelay), timer_notify, _, TIMER_REPEAT);
 }
 
 /////////////////////////////
@@ -330,11 +387,35 @@ public OnPluginEnd()
 }
 */
 
+/////////////////////
+//M A P   S T A R T//
+/////////////////////
+
 public void OnMapStart()
 {
+	notifytimer = CreateTimer(0.1, timerJump, _, TIMER_REPEAT);
+	if(GetConVarBool(g_tfgoChatNotify)) CreateTimer(GetConVarFloat(g_tfgoNotifyDelay), timer_notify, _, TIMER_REPEAT);
+	
 	TFGO_ReloadWeapons();
+	TFGO_ReloadPlantzones();
 	
 	Precache();
+	defuser = -1;
+	bomb = -999999;
+	defuse_amount = 0.0;
+}
+
+public Action:timer_notify(Handle:timer)
+{
+	if(GetConVarBool(g_tfgoChatNotify))
+	{
+		PrintToChatAll("\x04[TFGO]\x01 %s", notifications[notifycount]);
+		
+		if(notifycount+1 > sizeof(notifications)-1)
+			notifycount = 0;
+		else
+			notifycount++;
+	}
 }
 
 //////////////////////////////////
@@ -405,6 +486,35 @@ public player_changeclass(Handle:event, const char[] name, bool:dontBroadcast)
 			PrintToChat(client, "[TFGO] The Medic class is disabled.");
 		}
 	}
+	CreateTimer(1.0, timer_teamcheck);
+}
+
+/////////////////////////
+//R O U N D   S T A R T//
+/////////////////////////
+public teamplay_round_start(Handle:event, const String:name[], bool:dontBroadcast)
+{
+	PrintToChatAll("Round Started");
+	tfgo_warmupmode = false;
+	tfgo_roundisgoing = false;
+	tfgo_bombplanted = false;
+	defuser = -1;
+	bomb = -999999;
+	defuse_amount = 0.0;
+	bomber = -1;
+	DefuseCheck = INVALID_HANDLE;
+	freeze = true;
+	
+	for (int i = 1; i < MaxClients; i++)
+	{
+		if(IsValidClient(i))
+		{
+			SetEntityMoveType(i, MOVETYPE_NONE);
+		}
+	}
+	
+	randomBomber();
+	KillGameplayEnts();
 }
 
 ///////////////////////////
@@ -414,13 +524,43 @@ public teamplay_round_active(Handle:event, const String:name[], bool:dontBroadca
 {
 	// Delay it because the actual event happens 4 seconds before it should??
 	CreateTimer(4.0, timer_roundactive);
-	CreateTimer(10.0, timer_disallowspawn);
+	disallowspawn = CreateTimer(10.0, timer_disallowspawn);
 }
 
 public Action:timer_disallowspawn(Handle:timer)
 {
 	if(!tfgo_warmupmode)
 		tfgo_roundisgoing = true;
+	
+	freeze = false;
+}
+
+public Action:timer_roundactive(Handle:timer)
+{
+	bool found1 = false; bool found2 = false;
+	int random = GetRandomInt(0, 2);
+	char command[64];
+	if(random == 0) 			command = "letsmove";
+	else if(random == 1) 		command = "letsgo";
+	else if(random == 2) 		command = "locknload";
+	
+	for(int i = 0; i < MaxClients ; i++)
+	{
+		if(IsValidClient(i))
+		{
+			SetEntityMoveType(i, MOVETYPE_WALK);
+			if(GetClientTeam(i) == 2 && !found1)
+			{
+				PlayVoiceCommand(i, command);
+				found1 = true;
+			}
+			else if(GetClientTeam(i) == 3 && !found2)
+			{
+				PlayVoiceCommand(i, command);
+				found2 = true;
+			}
+		}
+	}
 }
 
 ///////////////////////////////////////////////////////////
@@ -465,33 +605,6 @@ public void TF2_OnWaitingForPlayersEnd()
 	tfgo_warmupmode = false;
 	KillGameplayEnts();
 	PrintToChatAll("[TFGO] Warmup Ended");
-}
-
-public Action:timer_roundactive(Handle:timer)
-{
-	bool found1 = false; bool found2 = false;
-	int random = GetRandomInt(0, 2);
-	char command[64];
-	if(random == 0) 			command = "letsmove";
-	else if(random == 1) 		command = "letsgo";
-	else if(random == 2) 		command = "locknload";
-	
-	for(int i = 0; i < MaxClients ; i++)
-	{
-		if(IsValidClient(i))
-		{
-			if(GetClientTeam(i) == 2 && !found1)
-			{
-				PlayVoiceCommand(i, command);
-				found1 = true;
-			}
-			else if(GetClientTeam(i) == 3 && !found2)
-			{
-				PlayVoiceCommand(i, command);
-				found2 = true;
-			}
-		}
-	}
 }
 
 /////////////////////
@@ -603,6 +716,15 @@ public event_PlayerResupply(Handle:event, const String:name[], bool:dontBroadcas
 {
 	new client = GetClientOfUserId(GetEventInt(event, "userid"));
 	CreateTimer(0.1, timer_PlayerResupply, client); // Delay to avoid bugs
+	if(IsValidClient(client))
+	{
+		if(freeze)
+			SetEntityMoveType(client, MOVETYPE_NONE);
+		else
+		{
+			SetEntityMoveType(client, MOVETYPE_WALK);
+		}
+	}
 }
 
 public Action:timer_PlayerResupply(Handle:timer, any:client)
@@ -749,7 +871,7 @@ public Player_Death(Handle:event, const String:name[], bool:dontBroadcast)
 		ShowSyncHudText(client, hudPlus1, "+$%i", moneyonkill);
 		PrintToChat(client, "[TFGO] +$%i for killing %N", moneyonkill, killed);
 	}
-	if(assister != killed && assister != client && GetConVarInt(g_tfgoMoneyOnAssist) >= 1 && IsClientInGame(client))
+	if(assister != killed && assister != client && GetConVarInt(g_tfgoMoneyOnAssist) >= 1 && IsValidClient(assister, false))
 	{
 		new moneyonassist = GetConVarInt(g_tfgoMoneyOnAssist);
 		if(tfgo_player_money[assister]+moneyonassist > GetConVarInt(g_tfgoMaxMoney))
@@ -764,6 +886,58 @@ public Player_Death(Handle:event, const String:name[], bool:dontBroadcast)
 		SetHudTextParams(0.14, 0.93, 2.0, 255, 200, 100, 150, 1);
 		ShowSyncHudText(assister, hudPlus2, "+$%i", moneyonassist);
 		PrintToChat(assister, "[TFGO] +$%i for assisting in killing %N", moneyonassist, killed);
+	}
+	
+	if(killed == bomber) {
+		TFGO_DropBomb(killed);
+	}
+	
+	CreateTimer(1.0, timer_teamcheck);
+}
+
+public Action:timer_teamcheck(Handle:timer)
+{
+	int ct = CheckTeamNum(TF_TEAM_RED);
+	int t = CheckTeamNum(TF_TEAM_BLU);
+	PrintToChatAll("CT: %i", ct);
+	PrintToChatAll("T: %i", t);
+	if(ct < 1)
+	{
+		TFGO_TWin();
+	}
+	else if(t < 1 && !tfgo_bombplanted)
+	{
+		TFGO_CTWin();
+	}
+}
+
+int CheckTeamNum(team)
+{
+	int ct = 0;
+	int t = 0;
+	for (int i = 1; i < MaxClients; i++)
+	{
+		if(IsValidClient(i))
+		{
+			if(GetClientTeam(i) == TF_TEAM_RED)
+				ct++;
+			else if(GetClientTeam(i) == TF_TEAM_BLU)
+				t++;
+		}
+	}
+	
+	if(team == TF_TEAM_RED)
+	{
+		return ct;
+	}
+	else if(team == TF_TEAM_BLU)
+	{
+		return t;
+	}
+	else
+	{
+		PrintToServer("[TFGO] Invalid team: %i", team);
+		return -1;
 	}
 }
 
@@ -815,6 +989,72 @@ public Action:Command_TFGO_VoiceResponsesMenu(client, args)
 {
 	VoiceMenu_VoiceResponses.Display(client, MENU_TIME_FOREVER);
 	return Plugin_Handled;
+}
+
+/////////////////////
+//D R O P   B O M B//
+/////////////////////
+public Action:Command_TFGO_DropBomb(client, args)
+{
+	if(IsValidClient(client)) {
+		TFGO_DropBomb(client);
+	} else {
+		ReplyToCommand(client, "[TFGO] Invalid Client");
+	}
+	return Plugin_Handled;
+}
+
+TFGO_DropBomb(client)
+{
+	if(client != bomber) {
+		return;
+	}
+	new Float:pos[3];
+	GetClientEyePosition(client, pos);
+	pos[2] -= 30.0;
+	
+	bomb_dropped = CreateEntityByName("prop_dynamic_override");
+	
+	if (IsValidEntity(bomb_dropped))
+	{
+		PrintToChatAll("valid entity, dropping");
+		DispatchKeyValue(bomb_dropped, "model", MODEL_C4);
+		SetEntProp(bomb_dropped, Prop_Data, "m_CollisionGroup", 1);
+		SetEntProp(bomb_dropped, Prop_Send, "m_usSolidFlags", 12);
+		//SetEntProp(bomb_dropped, Prop_Data, "m_usSolidFlags", 0x18);
+		SetEntProp(bomb_dropped, Prop_Data, "m_nSolidType", 6);
+		SetEntityGravity(bomb_dropped, 0.5);
+		SetEntPropFloat(bomb_dropped, Prop_Data, "m_flFriction", 5.0); // old: 0.8
+		SetEntPropFloat(bomb_dropped, Prop_Send, "m_flElasticity", 0.1); // old: 0.45
+		
+		DispatchKeyValue(bomb_dropped, "renderfx", "0");
+		DispatchKeyValue(bomb_dropped, "rendercolor", "255 255 255");
+		DispatchKeyValue(bomb_dropped, "renderamt", "255");
+		//SetEntPropEnt(bomb, Prop_Data, "m_hOwnerEntity", client);
+		DispatchSpawn(bomb_dropped);
+		TeleportEntity(bomb_dropped, pos, NULL_VECTOR, NULL_VECTOR);
+		GetEntPropVector(bomb_dropped, Prop_Send, "m_vecOrigin", bombpos);
+		CreateTimer(1.0, HookBombPickup);
+		bomber = -1;
+		PrintToChatTeam(TF_TEAM_BLU, "[TFGO] %N Has dropped the bomb!", client);
+	} else {
+		PrintToServer("[TFGO] !ERROR! FAILED TO CREATE DROPPED BOMB?");
+	}
+}
+
+public Action:HookBombPickup(Handle:timer) {
+	SDKHook(bomb_dropped, SDKHook_Touch, OnDroppedBombTouch);
+}
+
+public OnDroppedBombTouch(client, other)
+{
+	if(other > MaxClients || other < 1) return;
+	if(!IsValidClient(other)) return;
+	if(GetClientTeam(other) != TF_TEAM_BLU) return;
+	bomber = other;
+	PrintCenterText(other, "You've picked up the bomb");
+	SDKUnhook(bomb_dropped, SDKHook_Touch, OnDroppedBombTouch);
+	AcceptEntityInput(bomb_dropped, "Kill");
 }
 
 ///////////////////////////
@@ -1276,12 +1516,12 @@ public Action:Command_TFGO_BuyWeapon(client, args)
 	{
 		if (!isPlayerNearSpawn(client) && !GetConVarBool(g_tfgoBuyAnywhere) && !tfgo_warmupmode)
 		{
-			PrintToChat(client, "[TFGO] You're too far away from the buy zone!");
+			PrintCenterText(client, "Not in a buy zone");
 			return Plugin_Handled;
 		}
 		else if(!tfgo_canClientBuy[client])
 		{
-			PrintToChat(client, "[TFGO] Buytime is over");
+			PrintCenterText(client, "Buytime is over");
 			return Plugin_Handled;
 		}
 		
@@ -1458,8 +1698,8 @@ public TFGO_ReloadPlantzones()
 // Below will be called when the map config successfully loads.
 public TFGO_OnMapConfigLoaded()
 {
-	if(PlantCheck != INVALID_HANDLE)
-		KillTimer(PlantCheck);
+	//if(PlantCheck != INVALID_HANDLE)
+	//	PlantCheck = INVALID_HANDLE;
 	char map[64];
 	bool found = false;
 	GetCurrentMap(map, sizeof(map));
@@ -1479,14 +1719,10 @@ public TFGO_OnMapConfigLoaded()
 	if(found)
 	{
 		// Create a timer for checking the plant
-		PlantCheck = CreateTimer(0.1, TFGO_PlantCheck, _, TIMER_REPEAT);
-		if(PlantCheck != INVALID_HANDLE)
-		{
-			PrintToServer("[TFGO] Found the current map, timer created");
-			KillGameplayEnts();
-		}
-		else
-			PrintToServer("[TFGO] Found the current map, but the timer could not be created.");
+		//PlantCheck = 
+		CreateTimer(0.1, TFGO_PlantCheck);
+		PrintToServer("[TFGO] Found the current map, timer created");
+		KillGameplayEnts();
 	}
 	else
 	{
@@ -1497,7 +1733,7 @@ public TFGO_OnMapConfigLoaded()
 // Kills all gameplay changing entities.
 public KillGameplayEnts()
 {
-	new String:ents[17][32];
+	new String:ents[19][32];
 	ents[0] = "point_template";
 	ents[1] = "game_round_win";
 	ents[2] = "team_round_timer";
@@ -1516,6 +1752,8 @@ public KillGameplayEnts()
 	ents[14] = "item_healthkit_full";
 	ents[15] = "trigger_capture_area";
 	ents[16] = "prop_dynamic";
+	ents[17] = "func_brush";
+	ents[18] = "trigger_stun";
 	
 	 
 	char cls[32];
@@ -1544,6 +1782,36 @@ public KillGameplayEnts()
 						PrintToChatAll("Deleted edict: %s", cls);
 					}
 				}
+				else if(StrEqual(cls, "func_brush", false))
+				{
+					GetEntPropString(i, Prop_Data, "m_iName", mn, sizeof(mn));
+					if(StrEqual(mn, "startblock_jumpers", false))
+					{
+						deleted++;
+						RemoveEdict(i);
+						PrintToChatAll("Deleted edict: %s", cls);
+					}
+				}
+				else if(StrEqual(cls, "func_brush", false))
+				{
+					GetEntPropString(i, Prop_Data, "m_iName", mn, sizeof(mn));
+					if(StrEqual(mn, "startblock_jumpers", false))
+					{
+						deleted++;
+						RemoveEdict(i);
+						PrintToChatAll("Deleted edict: %s", cls);
+					}
+				}
+				else if(StrEqual(cls, "trigger_stun", false))
+				{
+					GetEntPropString(i, Prop_Data, "m_iName", mn, sizeof(mn));
+					if(StrEqual(mn, "stunt_start", false))
+					{
+						deleted++;
+						RemoveEdict(i);
+						PrintToChatAll("Deleted edict: %s", cls);
+					}
+				}
 				else
 				{
 					deleted++;
@@ -1562,9 +1830,13 @@ public KillGameplayEnts()
 	{
 		DispatchKeyValue(roundwin1, "force_map_reset", "1");
 		DispatchKeyValue(roundwin1, "targetname", "win_blue");
-		DispatchKeyValue(roundwin1, "TeamNum", "3");
-		DispatchSpawn(roundwin1);
-		PrintToChatAll("Created blue win entity");
+		DispatchKeyValue(roundwin1, "teamnum", "3");
+		SetVariantInt(TF_TEAM_BLU);
+		AcceptEntityInput(roundwin1, "SetTeam");
+		if (!DispatchSpawn(roundwin1))
+			PrintToChatAll("[TFGO] ENTITY ERROR Failed to dispatch blue round win entity");
+		else
+			PrintToChatAll("Created blue win entity");
 	}
 	else
 	{
@@ -1577,9 +1849,13 @@ public KillGameplayEnts()
 	{
 		DispatchKeyValue(roundwin2, "force_map_reset", "1");
 		DispatchKeyValue(roundwin2, "targetname", "win_red");
-		DispatchKeyValue(roundwin2, "TeamNum", "2");
-		DispatchSpawn(roundwin2);
-		PrintToChatAll("Created red win entity");
+		DispatchKeyValue(roundwin2, "teamnum", "2");
+		SetVariantInt(TF_TEAM_RED);
+		AcceptEntityInput(roundwin2, "SetTeam");
+		if (!DispatchSpawn(roundwin2))
+			PrintToChatAll("[TFGO] ENTITY ERROR Failed to dispatch red round win entity");
+		else
+			PrintToChatAll("Created red win entity");
 	}
 	else
 	{
@@ -1657,25 +1933,29 @@ public Action:Hook_Timeout_nobomb(const char[] output, int caller, int activator
 
 public TFGO_CTWin()
 {
-	if(IsValidEntity(roundwin1))
+	if(IsValidEntity(roundwin2))
 	{
-		AcceptEntityInput(roundwin1, "RoundWin");
+		disallowspawn = INVALID_HANDLE;
+		tfgo_roundisgoing = false;
+		AcceptEntityInput(roundwin2, "RoundWin");
 	}
 	else
 	{
-		PrintToServer("[TFGO] ERROR Tried to call CT Round win, but the win entity doesn't exist");
+		PrintToServer("[TFGO] Tried to call CT Round win, but the win entity doesn't exist, ignoring");
 	}
 }
 
 public TFGO_TWin()
 {
-	if(IsValidEntity(roundwin2))
+	if(IsValidEntity(roundwin1))
 	{
-		AcceptEntityInput(roundwin2, "RoundWin");
+		disallowspawn = INVALID_HANDLE;
+		tfgo_roundisgoing = false;
+		AcceptEntityInput(roundwin1, "RoundWin");
 	}
 	else
 	{
-		PrintToServer("[TFGO] ERROR Tried to call T Round win, but the win entity doesn't exist");
+		PrintToServer("[TFGO] Tried to call T Round win, but the win entity doesn't exist, ignoring");
 	}
 }
 
@@ -1685,18 +1965,26 @@ public Action:Command_TFGO_ForceWin(client, args)
 	GetCmdArg(1, arg, sizeof(arg));
 	if(StrEqual(arg, "ct"))
 	{
+		if(IsValidEntity(roundwin2))
+		{
+			AcceptEntityInput(roundwin2, "RoundWin");
+			ReplyToCommand(client, "[TFGO] Successfully forced team %s to win",  arg);
+		}
+		else
+		{
+			ReplyToCommand(client, "[TFGO] Could not find entity for the %s team.",  arg);
+		}
+	}
+	else if(StrEqual(arg, "t"))
+	{
 		if(IsValidEntity(roundwin1))
 		{
 			AcceptEntityInput(roundwin1, "RoundWin");
 			ReplyToCommand(client, "[TFGO] Successfully forced team %s to win",  arg);
 		}
-	}
-	else if(StrEqual(arg, "t"))
-	{
-		if(IsValidEntity(roundwin2))
+		else
 		{
-			AcceptEntityInput(roundwin2, "RoundWin");
-			ReplyToCommand(client, "[TFGO] Successfully forced team %s to win",  arg);
+			ReplyToCommand(client, "[TFGO] Could not find entity for the %s team.",  arg);
 		}
 	}
 	else
@@ -1706,14 +1994,78 @@ public Action:Command_TFGO_ForceWin(client, args)
 	return Plugin_Handled;
 }
 
-public Action:TFGO_PlantCheck(Handle:timer)
+public Action:TFGO_DefuseCheck(Handle:timer)
 {
 	if(tfgo_bombplanted)
+	{
+		if(!IsValidClient(defuser))
+		{
+			new Float:pos[3];
+			for (int i = 1; i < MaxClients; i++)
+			{
+				if(IsValidClient(i))
+				{
+					if(GetClientTeam(i) == TF_TEAM_RED)
+					{
+						GetClientEyePosition(i, pos);
+						
+						if(GetVectorDistance(pos, bombpos) < 100)
+						{
+							defuser = i;
+						}
+					}
+				}
+			}
+		}
+		else
+		{
+			new Float:pos[3];
+			GetClientEyePosition(defuser, pos);
+			if(GetClientTeam(defuser) == TF_TEAM_RED && GetVectorDistance(pos, bombpos) < 100)
+			{
+				if(defuse_amount < 100.0)
+				{
+					defuse_amount += 1.0;
+					PrintCenterText(defuser, "Defusing %f%", defuse_amount);
+				}
+				else
+				{
+					TFGO_CTWin();
+					EmitSoundToAll(SOUND_COMMAND_DEFUSED);
+					PrintCenterTextAll("The bomb has been defused");
+					KillTimer(timer);
+					//AcceptEntityInput(bomb, "Kill");
+					tfgo_bombplanted = false;
+					//if (PlantCheck != INVALID_HANDLE)
+					//	PlantCheck = INVALID_HANDLE;
+				}
+			}
+			else
+			{
+				defuser = -1;
+				defuse_amount = 0.0;
+			}
+		}
+	}
+	else
+	{
+		DefuseCheck = INVALID_HANDLE;
 		KillTimer(timer);
+	}
+}
+
+public Action:TFGO_PlantCheck(Handle:timer)
+{
+	if(!tfgo_bombplanted)
+	{
+		CreateTimer(0.1, TFGO_PlantCheck);
+	}
 	
+	//if(!tfgo_bombplanted)
+	//{
 	for (int i = 1; i < MaxClients; i++)
 	{
-		if(IsValidClient(i))
+		if(IsValidClient(i) && bomber == i)
 		{
 			new Float:pos[3];
 			new Float:aPos[3];
@@ -1730,36 +2082,45 @@ public Action:TFGO_PlantCheck(Handle:timer)
 			GetClientEyePosition(i, pos);
 			if(GetVectorDistance(pos, aPos) < sizeA)
 			{
-				if(GetEntityFlags(i) & FL_ONGROUND )
+				if((GetEntityFlags(i) & FL_ONGROUND) && (GetEntityFlags(i) != FL_DUCKING) )
 				{
-					// Player is at A, and they're on the ground, ready to plant
-					if(!player_CanPlant[i]) player_CanPlant[i] = true;
+					// Player is at A, and they're on the ground and not crouching, ready to plant
+					if(!bomber_canplant)
+					{
+						bomber_canplant = true;
+						PrintCenterText(bomber, "You have the bomb! Plant it with /plant");
+					}
 				}
 				else
 				{
 					// Player is at A, but not standing on the ground.
-					if(player_CanPlant[i]) player_CanPlant[i] = false;
+					if(bomber_canplant) bomber_canplant = false;
 				}
 			}
 			else if(GetVectorDistance(pos, bPos) < sizeB)
 			{
-				if(GetEntityFlags(i) & FL_ONGROUND )
+				if((GetEntityFlags(i) & FL_ONGROUND) && (GetEntityFlags(i) != FL_DUCKING) )
 				{
-					// Player is at B, and they're on the ground, ready to plant
-					if(!player_CanPlant[i]) player_CanPlant[i] = true;
+					// Player is at B, and they're on the ground and not crouching, ready to plant
+					if(!bomber_canplant)
+					{
+						bomber_canplant = true;
+						PrintCenterText(bomber, "You have the bomb! Plant it with /plant");
+					}
 				}
 				else
 				{
 					// Player is at B, but not standing on the ground.
-					if(player_CanPlant[i]) player_CanPlant[i] = false;
+					if(bomber_canplant) bomber_canplant = false;
 				}
 			}
 			else
 			{
-				if(player_CanPlant[i]) player_CanPlant[i] = false;
+				if(bomber_canplant) bomber_canplant = false;
 			}
 		}
 	}
+	//}
 }
 
 ///////////////////////
@@ -1767,15 +2128,15 @@ public Action:TFGO_PlantCheck(Handle:timer)
 ///////////////////////
 public Action:Command_TFGO_PlantBomb(client, args)
 {
-	if(player_CanPlant[client] && !tfgo_bombplanted)
+	if(bomber_canplant && bomber == client && !tfgo_bombplanted)
 	{
 		PrintToChat(client, "attempting to plant");
 		new Float:pos[3];
 		GetClientEyePosition(client, pos);
-		pos[2] -= 30.0;
+		pos[2] -= 40.0;
 		
-		new bomb;
 		bomb = CreateEntityByName("prop_dynamic");
+		bomb_explosion = CreateEntityByName("env_explosion");
 		
 		if (IsValidEntity(bomb))
 		{
@@ -1787,15 +2148,94 @@ public Action:Command_TFGO_PlantBomb(client, args)
 			
 			DispatchKeyValue(bomb, "renderfx", "0");
 			DispatchKeyValue(bomb, "rendercolor", "255 255 255");
-			DispatchKeyValue(bomb, "renderamt", "255");					
+			DispatchKeyValue(bomb, "renderamt", "255");
 			//SetEntPropEnt(bomb, Prop_Data, "m_hOwnerEntity", client);
 			DispatchSpawn(bomb);
 			TeleportEntity(bomb, pos, NULL_VECTOR, NULL_VECTOR);
 			GetEntPropVector(bomb, Prop_Send, "m_vecOrigin", bombpos);
+			
 			tfgo_bombplanted = true;
+			PrintCenterTextAll("A bomb has been planted");
+			EmitSoundToAll(SOUND_COMMAND_PLANTED);
+			defuser = -1;
+			defuse_amount = 0.0;
+			if(DefuseCheck == INVALID_HANDLE)
+				DefuseCheck = CreateTimer(0.1, TFGO_DefuseCheck, _, TIMER_REPEAT);
+			
+			if(IsValidEntity(timer_bomb) && IsValidEntity(timer_nobomb))
+			{
+				AcceptEntityInput(timer_nobomb, "Disable");
+				AcceptEntityInput(timer_bomb, "Enable");
+			}
+			else
+			{
+				PrintToServer("[TFGO] ERROR timers are not valid?");
+			}
+			bombtime = 0;
+			CreateTimer(1.0, timer_bombtick_sound);
+			CreateTimer(1.0, timer_bombtick);
+			
+			bomber = -1;
+			
+			//if (PlantCheck != INVALID_HANDLE)
+			//	PlantCheck = INVALID_HANDLE;
+		}
+		
+		if(IsValidEntity(bomb_explosion))
+		{
+			DispatchKeyValue(bomb_explosion, "fireballsprite", "sprites/zerogxplode.spr");
+			DispatchKeyValue(bomb_explosion, "iMagnitude", "10000");
+			DispatchKeyValue(bomb_explosion, "rendermode", "5");
+			DispatchSpawn(bomb_explosion);
+			TeleportEntity(bomb_explosion, bombpos, NULL_VECTOR, NULL_VECTOR);
 		}
 	}
+	else
+	{
+		ReplyToCommand(client, "[TFGO] You can't plant!");
+	}
 	return Plugin_Handled;
+}
+
+public Action:timer_bombtick_sound(Handle:timer)
+{
+	if(IsValidEntity(bomb) && tfgo_bombplanted)
+	{
+		EmitSoundToAll(SOUND_BOMBTICK, bomb, _, _, _, 1.0);
+		if(bombtime <= 20)
+		{
+			CreateTimer(1.5, timer_bombtick_sound);
+		}
+		else if(bombtime > 20 && bombtime <= 30)
+		{
+			CreateTimer(1.0, timer_bombtick_sound);
+		}
+		else if(bombtime < 40 && bombtime > 30)
+		{
+			CreateTimer(0.1, timer_bombtick_sound);
+		}
+		else
+		{
+			AcceptEntityInput(bomb_explosion, "Explode");
+			TFGO_TWin();
+		}
+	}
+	else
+	{
+		PrintToServer("[TFGO] Bomb entity is invalid");
+	}
+}
+
+public Action:timer_bombtick(Handle:timer)
+{
+	if(tfgo_bombplanted)
+	{
+		if(bombtime < 40)
+		{
+			bombtime++;
+			CreateTimer(1.0, timer_bombtick);
+		}
+	}
 }
 
 ///////////////////////////////
@@ -2019,6 +2459,46 @@ public TFGO_ReloadWeapons()
 	}
 }
 
+/////////////////////////
+//F O R C E   P L A N T//
+/////////////////////////
+public Action:Command_TFGO_Admin_ForcePlant(client, args)
+{
+	if(args == 1)
+	{
+		char arg[32];
+		GetCmdArg(1, arg, sizeof(arg)); // Get the second argument
+		
+		char target_name[MAX_TARGET_LENGTH]; // Target's name
+		int target_list[MAXPLAYERS], target_count; // Target list and count
+		bool tn_is_ml; // ???
+		
+		if ((target_count = ProcessTargetString(
+				arg,
+				client,
+				target_list,
+				MAXPLAYERS,
+				COMMAND_FILTER_CONNECTED,
+				target_name,
+				sizeof(target_name),
+				tn_is_ml)) <= 0)
+		{
+			ReplyToTargetError(client, target_count);
+			return Plugin_Handled;
+		}
+		
+		for (int i = 0; i < target_count; i++)
+		{
+			FakeClientCommandEx(target_list[i], "sm_plant");
+		}
+		return Plugin_Handled;
+	}
+	else // No arguments
+	{
+		ReplyToCommand(client, "[TFGO] usage: sm_forceplant <player>");
+		return Plugin_Handled;
+	}
+}
 
 /////////////////////
 //S E T   M O N E Y//
@@ -2115,12 +2595,12 @@ public Action:Command_TFGO_BuyMenu(client, args)
 {
 	if (!isPlayerNearSpawn(client) && !GetConVarBool(g_tfgoBuyAnywhere) && !tfgo_warmupmode)
 	{
-		PrintToChat(client, "[TFGO] You're too far away from the buy zone!");
+		PrintCenterText(client, "Not in a buy zone");
 		return Plugin_Handled;
 	}
 	else if(!tfgo_canClientBuy[client])
 	{
-		PrintToChat(client, "[TFGO] Buytime is over");
+		PrintCenterText(client, "Buytime is over");
 		return Plugin_Handled;
 	}
 	
@@ -2486,10 +2966,14 @@ stock Precache()
 {
 	// MATERIALS
 	PrecacheGeneric(SPRITE_RADIO_VMT, true);
-	PrecacheGeneric(SPRITE_RADIO_VTF, true);
+	PrecacheGeneric("materials/sprites/zerogxplode.spr", true);
+	//PrecacheGeneric("materials/models/weapons/w_models/w_c4/w_c4.vmt", true);
+	//PrecacheGeneric("materials/models/weapons/w_models/w_c4/w_c4.vtf", true);
 	
 	// MODELS
 	PrecacheModel(MODEL_GRENADE, true);
+	PrecacheModel(MODEL_C4, true);
+	//PrecacheModel("models/weapons/w_c4_planted.mdl", true);
 	
 	// SOUNDS
 	PrecacheSound(SOUND_FAILED, true);
@@ -2497,6 +2981,7 @@ stock Precache()
 	PrecacheSound(SOUND_THROW, true);
 	PrecacheSound(SOUND_SMOKE, true);
 	PrecacheSound(SOUND_BUY, true);
+	PrecacheSound(SOUND_BOMBTICK, true);
 	
 	// VOICE COMMANDS
 	PrecacheSound(SOUND_COMMAND_BLOW, true);
@@ -2525,6 +3010,8 @@ stock Precache()
 	PrecacheSound(SOUND_COMMAND_STICKTOG, true);
 	PrecacheSound(SOUND_COMMAND_STORM	, true);
 	PrecacheSound(SOUND_COMMAND_TAKEPOINT, true);
+	PrecacheSound(SOUND_COMMAND_PLANTED, true);
+	PrecacheSound(SOUND_COMMAND_DEFUSED, true);
 	
 	// Finally, add everything to the download table
 	char buffer[PLATFORM_MAX_PATH];
@@ -2555,7 +3042,18 @@ stock Precache()
 	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_STICKTOG);		AddFileToDownloadsTable(buffer);
 	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_STORM);		AddFileToDownloadsTable(buffer);
 	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_TAKEPOINT);	AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_PLANTED);		AddFileToDownloadsTable(buffer);
+	Format(buffer, sizeof(buffer), "sound/%s", SOUND_COMMAND_DEFUSED);		AddFileToDownloadsTable(buffer);
 	
+	/*
+	AddFileToDownloadsTable("models/weapons/w_c4_planted.dx80.vtx");
+	AddFileToDownloadsTable("models/weapons/w_c4_planted.dx90.vtx");
+	AddFileToDownloadsTable("models/weapons/w_c4_planted.phy");
+	AddFileToDownloadsTable("models/weapons/w_c4_planted.sw.vtx");
+	AddFileToDownloadsTable("models/weapons/w_c4_planted.vvd");
+	*/
+	
+	//AddFileToDownloadsTable(MODEL_C4);
 	AddFileToDownloadsTable(SPRITE_RADIO_VMT);
 	AddFileToDownloadsTable(SPRITE_RADIO_VTF);
 }
@@ -2727,6 +3225,55 @@ stock PlayVoiceCommand(client, String:info[])
 	}
 }
 
+/* Chooses a random bomber from the Terrorist team (BLU) */
+stock randomBomber()
+{
+	bool notenough = false;
+	if(GetTeamClientCount(TF_TEAM_BLU) < 1)
+	{
+		// Not enough players
+		notenough = true;
+	}
+	
+	if(!notenough)
+	{
+		int count = 0;
+		int plys[MAXPLAYERS + 1];
+		for (int i = 1; i < MaxClients; i++)
+		{
+			if(IsValidClient(i))
+			{
+				if(GetClientTeam(i) == TF_TEAM_BLU) // if player is in terrorist team (BLU)
+				{
+					plys[count] = i;
+					count++;
+				}
+			}
+		}
+		
+		int retries = 5; // Max retries of random generation before giving up
+		
+		for (int i = 0; i < retries; i++)
+		{
+			new random = GetRandomInt(0, count);
+			int ply = plys[random];
+			if(IsValidClient(ply))
+			{
+				if(GetClientTeam(ply) == TF_TEAM_BLU)
+				{
+					bomber = ply;
+					PrintCenterText(ply, "You have the bomb! Go to a bombsite, and plant it with /plant");
+					break;
+				}
+			}
+		}
+	}
+	else
+	{
+		PrintToServer("[TFGO] Not enough players in the Terrorist team, ignoring random bomb giving");
+	}
+}
+
 stock createRadioSprite(client) {
 	new ent = CreateEntityByName("env_sprite_oriented");
 	if (ent) {
@@ -2826,6 +3373,23 @@ public bool:PlayerHasWeapon(client, weapon)
 		}
 	}
 	return false;
+}
+
+public PrintToChatTeam(team, const char[] text, any ...)
+{
+	for (int i = 1; i < MaxClients; i++)
+	{
+		if(IsValidClient(i, false))
+		{
+			if(GetClientTeam(i) == team)
+			{
+				int len = strlen(text) + 255;
+				char[] textFormatted = new char[len];
+				VFormat(textFormatted, len, text, 3);
+				PrintToChat(i, textFormatted);
+			}
+		}
+	}
 }
 
 public int GetWeaponByName(String:weapon[])
