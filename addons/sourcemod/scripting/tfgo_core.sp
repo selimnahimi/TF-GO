@@ -20,7 +20,7 @@
 #include <tf2items_giveweapon>
 #undef REQUIRE_EXTENSIONS
 #include <SteamWorks>
-#include <multicolors>
+//#include <multicolors>
 
 #pragma semicolon 1
 
@@ -475,6 +475,8 @@ public player_changeclass(Handle:event, const char[] name, bool:dontBroadcast)
 	int id = GetEventInt(event, "userid");
 	int class = GetEventInt(event, "class");
 	int client = GetClientOfUserId(id);
+	
+	// Disabling the medic for it's healing skill
 	if(class == CLASS_MEDIC)
 	{
 		if(IsValidClient(client, false))
@@ -482,7 +484,8 @@ public player_changeclass(Handle:event, const char[] name, bool:dontBroadcast)
 			int team = GetClientTeam(client);
 			ShowVGUIPanel(client, team == TF_TEAM_BLU ? "class_blue" : "class_red");
 			TF2_SetPlayerClass(client, TFClass_Scout);
-			TF2_RespawnPlayer(client);
+			if(!tfgo_roundisgoing || tfgo_warmupmode)
+				TF2_RespawnPlayer(client);
 			PrintToChat(client, "[TFGO] The Medic class is disabled.");
 		}
 	}
@@ -515,6 +518,9 @@ public teamplay_round_start(Handle:event, const String:name[], bool:dontBroadcas
 	
 	randomBomber();
 	KillGameplayEnts();
+	
+	// Checking the plantzones
+	CreateTimer(0.1, TFGO_PlantCheck);
 }
 
 ///////////////////////////
