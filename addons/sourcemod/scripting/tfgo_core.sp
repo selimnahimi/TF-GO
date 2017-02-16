@@ -24,7 +24,7 @@
 
 #pragma semicolon 1
 
-#define PLUGIN_VERSION 			"1.6.0"
+#define PLUGIN_VERSION 			"1.7.0"
 
 #define SOUND_THROW 			"weapons/grenade_throw.wav"
 #define SOUND_FAILED 			"common/wpn_denyselect.wav"
@@ -135,12 +135,13 @@ int tfgo_radioEnts[MAXPLAYERS+1];						// Radio sprite entities
 bool tfgo_canThrowGrenade[MAXPLAYERS+1];					// Can the player throw a grenade?
 bool tfgo_canTalk[MAXPLAYERS+1];							// Can the player play a voice command?
 bool tfgo_canSwitchClass[MAXPLAYERS+1];					// Can the player switch classes?
+bool tfgo_clientHasDefuseKit[MAXPLAYERS + 1];			// Does the player have a defuse kit?
 //bool player_CanPlant[MAXPLAYERS + 1];					// Can the player plant the bomb?
 bool bomber_canplant = false;
 int bomber;
 
 int notifycount;
-new String:notifications[2][128];
+new String:notifications[1][128];
 
 new g_velocityOffset;
 
@@ -154,6 +155,7 @@ int bombtime;
 
 int defuser;
 float defuse_amount;
+new Float:defuserPos[3];
 
 int bomb;
 int bomb_explosion;
@@ -166,6 +168,7 @@ new String:tfgo_weapons_name[256][32];
 new String:tfgo_weapons_logname[256][32];
 int tfgo_weapons[256][4];
 int tfgo_grenades[5][1];
+int tfgo_defuseKitPrice;
 
 // Plant zones
 new Float:tfgo_plantzones[128][8];							// Plant zones for maps
@@ -204,6 +207,9 @@ Handle g_tfgoNotifyDelay;
 Handle hudMoney;
 Handle hudPlus1;
 Handle hudPlus2;
+Handle hudFragGrenade;
+Handle hudSmokeGrenade;
+Handle hudBomb;
 
 // Timers
 //Handle DashTimerHandle = INVALID_HANDLE;
@@ -235,9 +241,9 @@ public OnPluginStart()
 	Precache();
 	
 	char buffer[128];
-	notifications[0] = 		"To open the command menu, type \x05!commands\x01!";
-	Format(buffer, sizeof(buffer), "This server is running \x04TF:GO Version %s\x01 by \x05HUNcamper\x01", PLUGIN_VERSION);
-	notifications[1] = 		buffer;
+	//notifications[0] = 		"To open the command menu, type \x05!commands\x01!";
+	Format(buffer, sizeof(buffer), "This server is running \x04TF:GO Version %s\x01 by \x05HUNcamper\x01 and \x05Danct12\x01", PLUGIN_VERSION);
+	notifications[0] = 		buffer;
 	
 	
 	// C O N V A R S //
@@ -303,6 +309,10 @@ public OnPluginStart()
 	hudMoney = CreateHudSynchronizer();
 	hudPlus1 = CreateHudSynchronizer();
 	hudPlus2 = CreateHudSynchronizer();
+	hudFragGrenade = CreateHudSynchronizer();
+	hudSmokeGrenade = CreateHudSynchronizer();
+	hudBomb = CreateHudSynchronizer();
+	
 	bomber_canplant = false;
 	
 	for(int i = 1; i <= MaxClients; i++)
@@ -341,7 +351,7 @@ public OnPluginStart()
 	
 	// O T H E R //
 	LoadTranslations("common.phrases"); // Load common translation file
-	dashoffset = FindSendPropInfo("CTFPlayer", "m_iAirDash");
+	dashoffset = FindSendPropInfo("CTFPlayer", "m_iAirDash"); // for the scout double jump
 	
 	for(new client = 1; client <= MaxClients; client++)
 	{
@@ -368,9 +378,10 @@ public OnPluginStart()
 	freeze = false;
 }
 
+// When the notify timer convar changes. I guess it works, I can't remember xd
 public convarchange_notifydelay(ConVar convar, const char[] oldValue, const char[] newValue)
 {
-	PrintToChatAll("Convar changed");
+	//PrintToChatAll("Convar changed");
 	if(notifytimer != INVALID_HANDLE)
 		notifytimer = INVALID_HANDLE;
 		
@@ -411,6 +422,7 @@ public Action:timer_notify(Handle:timer)
 	{
 		PrintToChatAll("\x04[TFGO]\x01 %s", notifications[notifycount]);
 		
+		// When reached the end of the notifications, go back to the first one
 		if(notifycount+1 > sizeof(notifications)-1)
 			notifycount = 0;
 		else
@@ -431,6 +443,7 @@ public OnClientPostAdminCheck(client)
 	{
 		tfgo_clientGrenades[client][b] = 0;
 	}
+	tfgo_clientHasDefuseKit[client] = false;
 	
 	if(IsValidClient(client, false) && client != 0)
 	{
@@ -454,8 +467,30 @@ public Action:DrawHud(Handle:timer, any:client)
 {
 	if(IsValidClient(client))
 	{
-		SetHudTextParams(0.14, 0.90, 2.0, 100, 200, 255, 150);
+		SetHudTextParams(0.16, 0.80, 2.0, 100, 200, 255, 200);
 		ShowSyncHudText(client, hudMoney, "Money: $%i", tfgo_player_money[client]);
+		if(tfgo_clientGrenades[client][GRENADE_FRAG] > 0)
+		{
+			SetHudTextParams(0.16, 0.70, 2.0, 100, 100, 200, 200);
+			ShowSyncHudText(client, hudFragGrenade, "Frag Grenade (%i)", tfgo_clientGrenades[client][GRENADE_FRAG]);
+		}
+		if(tfgo_clientGrenades[client][GRENADE_SMOKE] > 0)
+		{
+			SetHudTextParams(0.16, 0.67, 2.0, 100, 100, 200, 200);
+			ShowSyncHudText(client, hudSmokeGrenade, "Smoke Grenade (%i)", tfgo_clientGrenades[client][GRENADE_SMOKE]);
+		}
+		if(client == bomber)
+		{
+			SetHudTextParams(0.16, 0.64, 2.0, 100, 255, 100, 200);
+			ShowSyncHudText(client, hudBomb, "You have the C4");
+		}
+		else if(tfgo_clientHasDefuseKit[client])
+		{
+			SetHudTextParams(0.16, 0.64, 2.0, 100, 255, 100, 200);
+			ShowSyncHudText(client, hudBomb, "You have a Defuse Kit");
+		}
+		
+		
 	}
 	tfgo_MoneyHUD[client] = CreateTimer(2.0, DrawHud, client);
 	return Plugin_Handled;
@@ -861,6 +896,7 @@ public Player_Death(Handle:event, const String:name[], bool:dontBroadcast)
 	{
 		tfgo_clientGrenades[killed][b] = 0;
 	}
+	tfgo_clientHasDefuseKit[killed] = false;
 	if(client != killed && GetConVarInt(g_tfgoMoneyOnKill) >= 1 && IsValidClient(client))
 	{
 		new moneyonkill = GetConVarInt(g_tfgoMoneyOnKill);
@@ -2018,6 +2054,7 @@ public Action:TFGO_DefuseCheck(Handle:timer)
 						if(GetVectorDistance(pos, bombpos) < 100)
 						{
 							defuser = i;
+							GetClientEyePosition(i, defuserPos);
 						}
 					}
 				}
@@ -2027,11 +2064,14 @@ public Action:TFGO_DefuseCheck(Handle:timer)
 		{
 			new Float:pos[3];
 			GetClientEyePosition(defuser, pos);
-			if(GetClientTeam(defuser) == TF_TEAM_RED && GetVectorDistance(pos, bombpos) < 100)
+			if(GetClientTeam(defuser) == TF_TEAM_RED && GetVectorDistance(pos, bombpos) < 100 && defuserPos[0] == pos[0] && defuserPos[1] == pos[1] && defuserPos[2] == pos[2])
 			{
 				if(defuse_amount < 100.0)
 				{
-					defuse_amount += 1.0;
+					if(tfgo_clientHasDefuseKit[defuser])
+						defuse_amount += 2.0;
+					else
+						defuse_amount += 1.0;
 					PrintCenterText(defuser, "Defusing %f%", defuse_amount);
 				}
 				else
@@ -2059,6 +2099,16 @@ public Action:TFGO_DefuseCheck(Handle:timer)
 		KillTimer(timer);
 	}
 }
+
+// If the defuser shoots, restart defusing.
+public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:angles[3], &weapon)
+{
+	if(client == defuser && (buttons & IN_ATTACK || buttons & IN_ATTACK2))
+	{
+		defuse_amount = 0.0;
+   		defuser = -1;
+	}
+}  
 
 public Action:TFGO_PlantCheck(Handle:timer)
 {
@@ -2406,6 +2456,7 @@ public TFGO_ReloadWeapons()
 	
 	bool hegrenade_found = false;
 	bool smoke_found = false;
+	bool defusekit_found = false;
 	// GRENADES
 	for (new i = 1; KvizExists(kv, "grenadeprices:nth-child(%i)", i); i++) {
 		decl String:id[32];
@@ -2424,6 +2475,17 @@ public TFGO_ReloadWeapons()
 			tfgo_grenades[GRENADE_SMOKE][0] = price;
 			smoke_found = true;
 		}
+		else if(StrEqual(id, "defusekit"))
+		{
+			decl price;
+			KvizGetNumExact(kv, price, "grenadeprices:nth-child(%i).price", i);
+			tfgo_defuseKitPrice = price;
+			defusekit_found = true;
+		}
+		else
+		{
+			PrintToServer("[TFGO] Invalid config entry in grenadeprices: %s", id);
+		}
 	}
 	if(!hegrenade_found)
 	{
@@ -2434,6 +2496,11 @@ public TFGO_ReloadWeapons()
 	{
 		tfgo_grenades[GRENADE_SMOKE][0] = 200;
 		PrintToServer("[TFGO] Couldn't find smokegrenade in config, setting hardcoded price ($200)");
+	}
+	if(!defusekit_found)
+	{
+		tfgo_defuseKitPrice = 400;
+		PrintToServer("[TFGO] Couldn't find defusekit in config, setting hardcoded price ($400)");
 	}
 	
 	KvizClose(kv);
@@ -2622,7 +2689,7 @@ Menu BuildBuyMenu()
 	menu.AddItem("smg", "SMGs");
 	menu.AddItem("rifle", "Rifles");
 	menu.AddItem("heavy" ,"Heavies");
-	menu.AddItem("grenade", "Grenades");
+	menu.AddItem("grenade", "Equipment");
 	
 	return menu;
 }
@@ -2798,7 +2865,7 @@ Menu BuildBuyMenu_heavy()
 Menu BuildBuyMenu_grenades()
 {
 	Menu menu = new Menu(Menu_BuyMenu_buy);
-	menu.SetTitle("Gear");
+	menu.SetTitle("Equipment");
 	
 	char buffer[64];
 	
@@ -2808,6 +2875,9 @@ Menu BuildBuyMenu_grenades()
 	price = tfgo_grenades[GRENADE_SMOKE][0];
 	Format(buffer, sizeof(buffer), "($%i) Smoke Grenade", price);
 	menu.AddItem("grenade_smoke", buffer);
+	price = tfgo_defuseKitPrice;
+	Format(buffer, sizeof(buffer), "($%i) Defuse Kit", price);
+	menu.AddItem("defusekit", buffer);
 	
 	menu.ExitBackButton = true;
 	
@@ -2882,6 +2952,36 @@ public int Menu_BuyMenu_buy(Menu menu, MenuAction action, int param1, int param2
 					else
 					{
 						PrintToChat(param1, "[TFGO] Not enough money! Price: $%i", tfgo_grenades[GRENADE_SMOKE][0]);
+					}
+				}
+			}
+		}
+		else if(StrEqual(info, "defusekit"))
+		{
+			if(tfgo_canClientBuy[param1])
+			{
+				if(GetClientTeam(param1) == TF_TEAM_BLU)
+				{
+					PrintToChat(param1, "[TFGO] You can't buy that as a Terrorist!");
+				}
+				else if(tfgo_clientHasDefuseKit[param1])
+				{
+					PrintToChat(param1, "[TFGO] You can't carry any more!");
+				}
+				else
+				{
+					if(tfgo_player_money[param1] >= tfgo_defuseKitPrice)
+					{
+						tfgo_clientHasDefuseKit[param1] = true;
+						tfgo_player_money[param1] -= tfgo_defuseKitPrice;
+						EmitSoundToAll(SOUND_BUY, param1, _, _, _, 1.0);
+						PrintToChat(param1, "[TFGO] Bought Defuse Kit for $%i", tfgo_defuseKitPrice);
+						SetHudTextParams(0.14, 0.93, 2.0, 255, 200, 100, 150, 1);
+						ShowSyncHudText(param1, hudPlus1, "-$%i", tfgo_defuseKitPrice);
+					}
+					else
+					{
+						PrintToChat(param1, "[TFGO] Not enough money! Price: $%i", tfgo_defuseKitPrice);
 					}
 				}
 			}
